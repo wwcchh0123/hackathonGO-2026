@@ -40,6 +40,13 @@ func decodeArgs(raw json.RawMessage, target any) error {
 	return nil
 }
 func Handler(c *session.Controller) http.Handler {
+	return HandlerFor(func(string) *session.Controller { return c })
+}
+
+// HandlerFor keeps the MCP wire protocol independent from the control-plane
+// registry. The resolver is called only for tools/call and may route each
+// authenticated device to its own session controller.
+func HandlerFor(resolve func(string) *session.Controller) http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.3.0"}, nil)
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}
 	ref := map[string]any{"type": "string", "minLength": 1, "maxLength": 100}
@@ -74,7 +81,12 @@ func Handler(c *session.Controller) http.Handler {
 				var in session.ListOptions
 				err = decodeArgs(r.Params.Arguments, &in)
 				if err == nil {
-					value, err = c.ListTasks(ctx, in)
+					controller := resolve(who.device)
+					if controller == nil {
+						err = fmt.Errorf("未知设备")
+					} else {
+						value, err = controller.ListTasks(ctx, in)
+					}
 				}
 			case "get_task":
 				var in struct {
@@ -83,7 +95,12 @@ func Handler(c *session.Controller) http.Handler {
 				}
 				err = decodeArgs(r.Params.Arguments, &in)
 				if err == nil {
-					value, err = c.GetTask(ctx, in.TaskRef, in.DetailOptions)
+					controller := resolve(who.device)
+					if controller == nil {
+						err = fmt.Errorf("未知设备")
+					} else {
+						value, err = controller.GetTask(ctx, in.TaskRef, in.DetailOptions)
+					}
 				}
 			default:
 				var in struct {
@@ -100,7 +117,12 @@ func Handler(c *session.Controller) http.Handler {
 						if name == "new_task" {
 							action = "start"
 						}
-						value, err = c.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Source: "mcp", ConversationID: who.conversation})
+						controller := resolve(who.device)
+						if controller == nil {
+							err = fmt.Errorf("未知设备")
+						} else {
+							value, err = controller.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Source: "mcp", ConversationID: who.conversation})
+						}
 					}
 				}
 			}

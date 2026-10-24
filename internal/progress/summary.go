@@ -50,6 +50,8 @@ func Summary(f events.Frame) string {
 		default:
 			return "正在等待下一步指令"
 		}
+	case "session.error":
+		return "执行遇到问题，正在等待云端状态更新"
 	case "agent.message":
 		for _, c := range e.Content {
 			if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
@@ -78,6 +80,12 @@ func truncate(s string, n int) string {
 func SpokenStatus(s device.Snapshot) string {
 	if s.Error != "" || s.Status == "error" {
 		return "操作未完成，请检查设备上的错误后重试"
+	}
+	if s.StreamError != "" {
+		return s.StreamError
+	}
+	if s.PreviewError != "" {
+		return "本轮已结束，预览暂时不可用，请查看联调页面"
 	}
 	var text string
 	switch s.Status {

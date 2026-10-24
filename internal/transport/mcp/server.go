@@ -55,7 +55,7 @@ func Handler(c *session.Controller) http.Handler {
 		if tool == "start_new_project" {
 			action = "start"
 		}
-		receipt, err := c.Submit(session.Command{Action: action, Prompt: text})
+		receipt, err := c.Submit(session.Command{Action: action, Prompt: text, Source: "mcp", ConversationID: who.conversation})
 		if err == nil && who.conversation != "" {
 			recent[key] = cached{receipt, now.Add(dedupWindow)}
 		}

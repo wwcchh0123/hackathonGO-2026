@@ -38,7 +38,7 @@ func ID() string {
 	}
 	return hex.EncodeToString(b)
 }
-func (m *Mock) emit(id, kind string, extra map[string]any) {
+func (m *Mock) emit(id, kind string, extra map[string]any) string {
 	if extra == nil {
 		extra = map[string]any{}
 	}
@@ -47,6 +47,7 @@ func (m *Mock) emit(id, kind string, extra map[string]any) {
 	extra["created_at"] = time.Now().UTC().Format(time.RFC3339Nano)
 	b, _ := json.Marshal(extra)
 	m.hub.Append(id, events.Frame{ID: extra["id"].(string), Type: kind, Data: b})
+	return extra["id"].(string)
 }
 func (m *Mock) Create(ctx context.Context) (Session, error) {
 	if err := ctx.Err(); err != nil {
@@ -71,19 +72,20 @@ func (m *Mock) Status(ctx context.Context, id string) (Session, error) {
 	}
 	return Session{ID: id, Status: s.status}, nil
 }
-func (m *Mock) Send(ctx context.Context, id, prompt string) error {
+func (m *Mock) SendMessage(ctx context.Context, id string, message Message) (AcceptedInput, error) {
+	prompt := message.Text
 	if err := ctx.Err(); err != nil {
-		return err
+		return AcceptedInput{}, err
 	}
 	m.mu.Lock()
 	s := m.sessions[id]
 	if s == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("unknown session")
+		return AcceptedInput{}, fmt.Errorf("unknown session")
 	}
 	if s.status != "idle" {
 		m.mu.Unlock()
-		return fmt.Errorf("session is not idle")
+		return AcceptedInput{}, fmt.Errorf("session is not idle")
 	}
 	run, cancel := context.WithCancel(m.ctx)
 	s.cancel = cancel
@@ -93,7 +95,7 @@ func (m *Mock) Send(ctx context.Context, id, prompt string) error {
 	s.ready = false
 	done := s.done
 	step := m.Step
-	m.emit(id, "user.message", map[string]any{"content": []any{map[string]string{"type": "text", "text": prompt}}})
+	eventID := m.emit(id, "user.message", map[string]any{"client_request_id": message.CommandID, "content": []any{map[string]string{"type": "text", "text": prompt}}})
 	m.emit(id, "session.status_running", nil)
 	m.mu.Unlock()
 	go func() {
@@ -132,7 +134,11 @@ func (m *Mock) Send(ctx context.Context, id, prompt string) error {
 		m.emit(id, "session.status_idle", map[string]any{"stop_reason": map[string]string{"type": reason}})
 		m.mu.Unlock()
 	}()
-	return nil
+	return AcceptedInput{EventID: eventID}, nil
+}
+func (m *Mock) Send(ctx context.Context, id, prompt string) error {
+	_, err := m.SendMessage(ctx, id, Message{Text: prompt})
+	return err
 }
 func (m *Mock) Interrupt(ctx context.Context, id string) error {
 	m.mu.Lock()

@@ -56,3 +56,21 @@ func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, err
 	resultPath := (&url.URL{Path: "/results/" + token + "/" + entry}).EscapedPath()
 	return strings.TrimRight(s.PublicURL, "/") + resultPath, nil
 }
+
+// Discard removes a completed publication that lost its session/turn race.
+func (s *Store) Discard(result string) error {
+	u, err := url.Parse(result)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/results/"), "/")
+	if !strings.HasPrefix(u.Path, "/results/") || len(parts) < 2 || len(parts[0]) != 32 {
+		return fmt.Errorf("invalid publication")
+	}
+	for _, r := range parts[0] {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return fmt.Errorf("invalid publication")
+		}
+	}
+	return os.RemoveAll(filepath.Join(s.Root, parts[0]))
+}

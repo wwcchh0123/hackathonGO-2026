@@ -1,11 +1,10 @@
 # 灵矽语音编程工作站
 
 [![CI](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/codecov/c/gh/wwcchh0123/hackathonGO-2026?label=coverage)](https://app.codecov.io/gh/wwcchh0123/hackathonGO-2026)
 
 基于 [issue #6 的整体设计](https://github.com/wwcchh0123/hackathonGO-2026/issues/6)：灵矽云理解语音，Go 控制服务编排七牛 AgentAPI，设备拉流渲染并投屏，大屏仅负责显示。
 
-当前提供 **Go 控制服务、完整模拟链路、Mac 软件语音终端**，以及基于本机 AgentAPI 实际合约的 HTTP 适配器。语音终端可真实接入灵矽的 ASR / 智能体 / TTS；设备 MCP 和 AirPlay 发送端后续接入。两个程序的原生 HTML/JS 页面分别嵌入 Go 二进制，无需前端构建。
+当前提供 **Go 控制服务、完整模拟链路、Mac 软件语音终端**，以及通过 Anthropic Go SDK 接入真实 AgentAPI 会话、事件流和 Files API 的 HTTP 适配器。语音终端可真实接入灵矽的 ASR / 智能体 / TTS；设备 MCP 和 AirPlay 发送端后续接入。两个程序的原生 HTML/JS 页面分别嵌入 Go 二进制，无需前端构建。
 
 ## Mac 语音客户端
 
@@ -55,7 +54,7 @@ internal/
   linx/                    持久化设备身份、OTA 激活、灵矽 WebSocket 协议
   voice/                   本地语音桥、单窗口连接、嵌入式麦克风/播放页面
   voicecodec/              可选的 libopus 编解码，使用 opus 构建标签
-  agentapi/                云端执行接口、真实 HTTP/SSE 适配、模拟执行器
+  agentapi/                云端执行接口、Anthropic Go SDK 适配、模拟执行器
   session/                 单设备会话绑定、异步命令队列与执行顺序
   events/                  原始事件日志、去重、历史回放与实时分发
   device/                  可订阅的设备状态快照，与传输方式解耦
@@ -76,7 +75,7 @@ docs/                      接口协议与外部接入约定
 
 ```sh
 cp .env.example .env
-# 编辑 .env：AGENTAPI_MODE=http，补齐 AgentAPI 的四项配置和 CONTROL_TOKEN
+# 编辑 .env：AGENTAPI_MODE=http，补齐 AgentAPI 的 host/key、agent、environment 和 CONTROL_TOKEN；可选固定 AGENTAPI_AGENT_VERSION
 # 生产接入设 DEV_TOOLS=false
 set -a
 source .env
@@ -84,9 +83,9 @@ set +a
 make build run
 ```
 
-`AGENTAPI_AGENT_ID` 必须指向预先配置好的 **claudecode** 智能体，`AGENTAPI_ENVIRONMENT_ID` 为云端环境。控制服务不会替你创建 agent/environment 或覆盖其模型。API Key 只由服务端读取，浏览器使用另一个 `CONTROL_TOKEN` 建立 HttpOnly 会话 Cookie；云 MCP 调用使用 `Authorization: Bearer <CONTROL_TOKEN>`。
+`AGENTAPI_AGENT_ID` 必须指向预先配置好的 **claudecode** 智能体；当前 AgentAPI 文档推荐的 Go SDK 版本为 `github.com/anthropics/anthropic-sdk-go v1.72.0`，`AGENTAPI_ENVIRONMENT_ID` 为云端环境。控制服务不会替你创建 agent/environment 或覆盖其模型。API Key 只由服务端读取，浏览器使用另一个 `CONTROL_TOKEN` 建立 HttpOnly 会话 Cookie；云 MCP 调用使用 `Authorization: Bearer <CONTROL_TOKEN>`。
 
-云端 MCP 按 [issue #8](https://github.com/wwcchh0123/hackathonGO-2026/issues/8) 提供 `send_message`、`start_new_project`、`get_status` 三个工具，快速返回一句中文，不返回结构化快照。默认 Mock 即可验证整个控制流程；本次不扩展真实 AgentAPI 交互。
+云端 MCP 按 [issue #8](https://github.com/wwcchh0123/hackathonGO-2026/issues/8) 提供 `send_message`、`start_new_project`、`get_status` 三个工具，快速返回一句中文，不返回结构化快照。Mock 用于无密钥测试；HTTP 模式会启动前只读校验 agent/environment，并实际创建 Session、发送事件、消费 SSE 和下载 Files API 产物。
 
 在灵矽后台配置 MCP URL `https://你的服务域名/mcp`。同一地址支持当前灵矽使用的 Streamable HTTP（`POST /mcp`）和旧版 SSE（`GET /mcp` → `POST /mcp/message`）；后台即使将字段标为 SSE URL，也使用此地址。管理端初始化和列举工具无需设备 ID；真正调用工具时，`X-Linx-Device-Id` 须与 `DEVICE_ID` 一致。网页体验的虚拟设备可发现工具，但不能替代已绑定的 Mac 设备调用工具。`X-Linx-Session-Id` 仅用于日志和五秒去重；所有 MCP HTTP 请求均使用独立的 CONTROL_TOKEN Bearer 鉴权。当前原型仅支持一个配置的设备。反向代理允许 WebSocket、关闭 SSE 缓冲，读超时至少十分钟；不启用要求客户端回复 ping 的 MCP KeepAlive。配置和智能体提示词见 [协议文档](docs/protocol.md#灵矽配置与部署)。
 
@@ -105,6 +104,6 @@ make voice-test
 node --test internal/voice/test/pcm.test.mjs
 ```
 
-包含 gofmt 检查、Go vet、Go race 测试、二进制构建和 Codecov 上传所需的覆盖率报告。测试只使用本地临时目录和内存/HTTP 假上游，无外部密钥，通常数秒完成；依赖缺失直接失败。覆盖打断后的等待顺序、同会话修改/继续、新会话替换、SSE 回放边界、原始 JSON 保留、MCP → 设备 WebSocket/SSE → 结果托管。GitHub Actions 运行同一组检查。
+包含 gofmt 检查、Go vet、Go race 测试、二进制构建和本地覆盖率报告。自动测试只使用本地临时目录和内存/HTTP 假上游，无外部密钥；手工真实联调使用私有配置，不纳入测试。覆盖打断后的等待顺序、同会话修改/继续、新会话替换、SSE 回放边界、原始 JSON 保留、MCP → 服务端 WebSocket/SSE → 结果托管。GitHub Actions 运行同一组检查，覆盖率结果输出到日志，无需 Codecov token。
 
-接口约定见 [协议文档](docs/protocol.md)。外部依据为本机 `~/qbox/agentapi` 与 `/Users/jicarl/qiniu/Xrobot-docs`，无需将它们作为构建依赖。
+实现设计见 [MCP 到 AgentAPI 设计](docs/mcp-agentapi-design.md)，接口约定见 [协议文档](docs/protocol.md)。外部依据为本机 `~/qbox/agentapi` 与 `/Users/jicarl/qiniu/Xrobot-docs`，无需将它们作为构建依赖。

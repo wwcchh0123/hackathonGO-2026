@@ -4,14 +4,16 @@ package device
 import "sync"
 
 type Snapshot struct {
-	DeviceID  string `json:"device_id"`
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
-	Summary   string `json:"summary"`
-	Prompt    string `json:"prompt"`
-	ResultURL string `json:"result_url"`
-	Error     string `json:"error,omitempty"`
-	Revision  uint64 `json:"revision"`
+	DeviceID     string `json:"device_id"`
+	SessionID    string `json:"session_id"`
+	Status       string `json:"status"`
+	Summary      string `json:"summary"`
+	Prompt       string `json:"prompt"`
+	ResultURL    string `json:"result_url"`
+	Error        string `json:"error,omitempty"`
+	StreamError  string `json:"stream_error,omitempty"`
+	PreviewError string `json:"preview_error,omitempty"`
+	Revision     uint64 `json:"revision"`
 }
 type State struct {
 	mu      sync.Mutex

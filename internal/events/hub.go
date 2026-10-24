@@ -83,3 +83,10 @@ func (h *Hub) Replay(ctx context.Context, session, after string, emit func(Frame
 		}
 	}
 }
+
+// Frames returns an immutable snapshot for reconciling a late acceptance receipt.
+func (h *Hub) Frames(session string) []Frame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]Frame(nil), h.get(session).frames...)
+}

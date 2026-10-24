@@ -16,6 +16,18 @@ type File struct {
 	Data []byte
 }
 
+// Message keeps user text unchanged while correlating acceptance with the stream.
+type Message struct {
+	Text      string
+	CommandID string
+}
+
+type AcceptedInput struct{ EventID string }
+
+type AcceptedProvider interface {
+	SendMessage(context.Context, string, Message) (AcceptedInput, error)
+}
+
 type Provider interface {
 	Create(context.Context) (Session, error)
 	Send(context.Context, string, string) error

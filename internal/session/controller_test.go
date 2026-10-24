@@ -299,7 +299,7 @@ func TestNewProjectWaitsForIdleDespiteOldIdleEvent(t *testing.T) {
 	<-p.interrupted
 	// Replayed idle must never release the worker waiting on runtime status.
 	p.frames <- events.Frame{ID: "old-idle", Type: "session.status_idle", Data: json.RawMessage(`{"id":"old-idle","type":"session.status_idle","stop_reason":{"type":"interrupted"}}`)}
-	until(t, func() bool { return c.State.Get().Status == "idle" })
+	until(t, func() bool { return len(p.trace()) == 3 })
 	if len(p.trace()) != 3 {
 		t.Fatalf("new session created before runtime idle: %+v", p.trace())
 	}

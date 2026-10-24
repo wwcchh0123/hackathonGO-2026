@@ -70,7 +70,7 @@ node --test internal/voice/test/pcm.test.mjs
 
 默认控制服务测试不依赖 libopus。语音测试额外启用 `opus` 构建标签，覆盖真实编码/解码与 16/24 kHz 输出；其他测试使用本地 HTTP/WebSocket 假上游，覆盖激活码 → 绑定 → 获取 token、握手鉴权、hello 超时、完整语音桥、停止播报后丢弃旧音频、关闭页面取消激活、跨站请求和双窗口限制。浏览器重采样测试覆盖 16/44.1/48/96 kHz、跨回调连续性、PCM16 裁剪与末帧补零。Node 只用于这项测试，不参与应用运行或构建。
 
-2026-10-24 已使用真实绑定设备验证语音收发，并通过公网隧道收到灵矽对三个 MCP 工具的真实调用。控制服务以 Mock 模式完成受理、状态与示例产物展示；真实 AgentAPI 编程和 AirPlay 尚未完成联调。绑定身份和凭据均不入库。
+2026-10-24 此前已使用真实绑定设备验证语音收发，并通过公网隧道收到灵矽对旧三个 MCP 工具的真实调用。Issue #18 的四工具已通过官方 SDK 回环和真实 AgentAPI HTTP 联调；本次没有可用的绑定设备身份目录，因此没有声称新四工具已在 Mac 语音端实测。真实 AirPlay 尚未完成联调。绑定身份和凭据均不入库。
 
 ## 常见问题
 
@@ -87,3 +87,9 @@ node --test internal/voice/test/pcm.test.mjs
 | 停止播报后编程任务还在运行 | 这是预期行为：语音 abort 只停止 TTS；编程暂停意图通过云端 MCP 的 send_message 原话转交，由控制服务处理会话 |
 
 协议来源：[OTA 网关](https://linx.qiniu.com/docs/xrobot/platform/OTA)、[WebSocket 与音频](https://linx.qiniu.com/docs/xrobot/platform/websocket)、[设备绑定](https://linx.qiniu.com/docs/xrobot/guide/quick-start)。
+
+## 多任务工具迁移（Issue #18）
+
+控制服务升级后，在灵矽管理端重新发现并保存 `list_tasks/get_task/send_message/new_task`，替换旧三个工具，提示词使用 [协议文档](protocol.md#灵矽配置与部署)。新回执含任务引用和命令编号，Agent 应读取 JSON 字段后简短转述；查询结果和旧消息摘录不作为本轮完成证明。工具失败或 unknown 时先查询，不自动重复提交。
+
+Mac 语音桥继续只处理身份、音频和语音事件；本次没有把控制服务 devui 混入真实语音页面，也不通过 get_task 自动切换屏幕。任务展示通过独立设备接口明确选择。此前三工具的实测记录不代表新四工具已在真实语音端验证。

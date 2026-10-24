@@ -80,7 +80,7 @@ func TestMCPStreamableLinxDiscoveryAndAuthorization(t *testing.T) {
 				names = append(names, tool.Name)
 			}
 			slices.Sort(names)
-			if !slices.Equal(names, []string{"get_status", "send_message", "start_new_project"}) {
+			if !slices.Equal(names, []string{"get_task", "list_tasks", "new_task", "send_message"}) {
 				t.Fatal(names)
 			}
 			for _, name := range names {
@@ -89,12 +89,12 @@ func TestMCPStreamableLinxDiscoveryAndAuthorization(t *testing.T) {
 		}
 		request(version, "tools/list", map[string]any{}, "", "", 401)
 		request(version, "tools/list", map[string]any{}, "Bearer wrong", "", 401)
-		raw := request(version, "tools/call", map[string]any{"name": "get_status", "arguments": map[string]any{}}, "Bearer test-control-token", cfg.DeviceID, 200)
+		raw := request(version, "tools/call", map[string]any{"name": "list_tasks", "arguments": map[string]any{}}, "Bearer test-control-token", cfg.DeviceID, 200)
 		var result mcp.CallToolResult
 		if err := json.Unmarshal(raw, &result); err != nil {
 			t.Fatal(err)
 		}
-		if got := voiceResult(t, &result, false); got != "还没有任务，可以告诉我想做什么" {
+		if got := voiceResult(t, &result, false); !strings.Contains(got, `"data":[]`) {
 			t.Fatal(got)
 		}
 	}

@@ -46,6 +46,10 @@
             </div>
           </section>
           <div class="error" id="error" role="alert" hidden></div>
+          <section class="workspace-heading">
+            <label>展示任务 <select id="view-task"><option value="">请选择</option></select></label>
+            <button id="refresh-tasks">刷新任务</button><button id="more-tasks" hidden>下一页</button>
+          </section>
           <section class="workspace">
             <div class="workspace-heading">
               <h2 id="view-name">执行时间线</h2>
@@ -81,9 +85,10 @@
           <label for="instruction">需求 / 修改 / 继续 / 暂停（保留原话）</label
           ><textarea id="instruction" maxlength="2000">
 帮我做一个番茄钟网页</textarea>
+          <label>消息目标 <select id="command-task"><option value="">请明确选择</option></select></label>
           <div class="buttons">
             <button data-action="message">发送消息</button>
-            <button data-action="new_project">开个新项目</button>
+            <button data-action="new_project">新建独立任务</button>
           </div>
           <div class="buttons views">
             <button data-view="timeline">看过程</button

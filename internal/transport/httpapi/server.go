@@ -19,7 +19,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/config"
-	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
 	cloudmcp "github.com/wwcchh0123/hackathonGO-2026/internal/transport/mcp"
 )
@@ -54,6 +53,10 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 	protect := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if cfg.Token != "" {
+				if raw := r.Header.Get("Authorization"); raw != "" && !strings.HasPrefix(raw, "Bearer ") {
+					failure(w, 401, "需要 Bearer 访问令牌")
+					return
+				}
 				token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 				if cookie, err := r.Cookie("linxi_control"); err == nil && token == "" {
 					token = cookie.Value
@@ -114,35 +117,8 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 			}
 		}
 	})))
-	mux.Handle("GET /api/sessions/{id}/events", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if id != c.State.Get().SessionID {
-			failure(w, 404, "当前设备未绑定此会话")
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Accel-Buffering", "no")
-		rc := http.NewResponseController(w)
-		if err := rc.Flush(); err != nil {
-			return
-		}
-		// Per-write deadlines bound a stalled device without timing out an idle stream.
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-		err := c.Events.Replay(ctx, id, r.Header.Get("Last-Event-ID"), func(f events.Frame) error {
-			if err := rc.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				return err
-			}
-			if _, err := fmt.Fprintf(w, "id: %s\nevent: agent_event\ndata: %s\n\n", f.ID, f.Data); err != nil {
-				return err
-			}
-			return rc.Flush()
-		})
-		if err != nil && r.Context().Err() == nil {
-			slog.Debug("device SSE closed", "error", err)
-		}
-	})))
+	taskAPI(mux, protect, c)
+
 	if cfg.DevTools {
 		mux.Handle("POST /api/commands", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var cmd session.Command

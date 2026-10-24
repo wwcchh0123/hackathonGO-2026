@@ -35,7 +35,7 @@ func run() error {
 	defer cancel()
 	var provider agentapi.Provider = agentapi.NewMock(ctx)
 	if cfg.Mode == "http" {
-		httpProvider := agentapi.NewHTTP(cfg.AgentURL, cfg.AgentKey, cfg.AgentID, cfg.EnvironmentID).WithVersion(cfg.AgentVersion)
+		httpProvider := agentapi.NewHTTP(cfg.AgentURL, cfg.AgentKey, cfg.AgentID, cfg.EnvironmentID).WithVersion(cfg.AgentVersion).WithVaults(cfg.VaultIDs)
 		validateCtx, validateCancel := context.WithTimeout(ctx, 15*time.Second)
 		if err := httpProvider.Validate(validateCtx); err != nil {
 			validateCancel()

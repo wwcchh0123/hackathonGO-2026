@@ -1,19 +1,28 @@
 // Package device publishes replaceable device snapshots, independent of transport.
 package device
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type Snapshot struct {
-	DeviceID     string `json:"device_id"`
-	SessionID    string `json:"session_id"`
-	Status       string `json:"status"`
-	Summary      string `json:"summary"`
-	Prompt       string `json:"prompt"`
-	ResultURL    string `json:"result_url"`
-	Error        string `json:"error,omitempty"`
-	StreamError  string `json:"stream_error,omitempty"`
-	PreviewError string `json:"preview_error,omitempty"`
-	Revision     uint64 `json:"revision"`
+	DeviceID       string     `json:"device_id"`
+	TaskRef        string     `json:"task_ref,omitempty"`
+	CommandID      string     `json:"command_id,omitempty"`
+	CommandState   string     `json:"command_state,omitempty"`
+	SessionID      string     `json:"session_id"`
+	Status         string     `json:"status"`
+	Summary        string     `json:"summary"`
+	SummaryEventID string     `json:"summary_event_id,omitempty"`
+	SummaryTime    *time.Time `json:"summary_time,omitempty"`
+	StopReason     string     `json:"stop_reason,omitempty"`
+	Prompt         string     `json:"prompt"`
+	ResultURL      string     `json:"result_url"`
+	Error          string     `json:"error,omitempty"`
+	StreamError    string     `json:"stream_error,omitempty"`
+	PreviewError   string     `json:"preview_error,omitempty"`
+	Revision       uint64     `json:"revision"`
 }
 type State struct {
 	mu      sync.Mutex

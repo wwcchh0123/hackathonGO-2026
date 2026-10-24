@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,7 +35,14 @@ func run() error {
 	defer cancel()
 	var provider agentapi.Provider = agentapi.NewMock(ctx)
 	if cfg.Mode == "http" {
-		provider = agentapi.NewHTTP(cfg.AgentURL, cfg.AgentKey, cfg.AgentID, cfg.EnvironmentID)
+		httpProvider := agentapi.NewHTTP(cfg.AgentURL, cfg.AgentKey, cfg.AgentID, cfg.EnvironmentID).WithVersion(cfg.AgentVersion)
+		validateCtx, validateCancel := context.WithTimeout(ctx, 15*time.Second)
+		if err := httpProvider.Validate(validateCtx); err != nil {
+			validateCancel()
+			return fmt.Errorf("validate AgentAPI configuration: %w", err)
+		}
+		validateCancel()
+		provider = httpProvider
 	}
 	controller := session.New(ctx, provider, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir, PublicURL: cfg.PublicURL})
 	srv := &http.Server{Addr: cfg.Addr, Handler: httpapi.Handler(cfg, controller), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}

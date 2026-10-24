@@ -5,10 +5,12 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
 	Addr, Mode, DeviceID, PublicURL, DataDir, Token, AgentURL, AgentKey, AgentID, EnvironmentID string
+	AgentVersion                                                                                int
 	DevTools                                                                                    bool
 }
 
@@ -21,6 +23,12 @@ func env(k, d string) string {
 func Load() (Config, error) {
 	c := Config{Addr: env("LISTEN_ADDR", "127.0.0.1:8080"), Mode: env("AGENTAPI_MODE", "mock"), DeviceID: env("DEVICE_ID", "demo-device"), PublicURL: env("PUBLIC_URL", "http://localhost:8080"), DataDir: env("DATA_DIR", ".data/results"), Token: os.Getenv("CONTROL_TOKEN"), AgentURL: os.Getenv("AGENTAPI_BASE_URL"), AgentKey: os.Getenv("AGENTAPI_API_KEY"), AgentID: os.Getenv("AGENTAPI_AGENT_ID"), EnvironmentID: os.Getenv("AGENTAPI_ENVIRONMENT_ID")}
 	var err error
+	if raw := strings.TrimSpace(os.Getenv("AGENTAPI_AGENT_VERSION")); raw != "" {
+		c.AgentVersion, err = strconv.Atoi(raw)
+		if err != nil || c.AgentVersion < 1 {
+			return c, fmt.Errorf("AGENTAPI_AGENT_VERSION must be a positive integer")
+		}
+	}
 	c.DevTools, err = strconv.ParseBool(env("DEV_TOOLS", strconv.FormatBool(c.Mode == "mock")))
 	if err != nil {
 		return c, fmt.Errorf("DEV_TOOLS must be true or false")

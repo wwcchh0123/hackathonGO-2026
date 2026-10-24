@@ -122,7 +122,7 @@ location / {
 }
 ```
 
-快照**不包含 view**。status 为 ready / creating / sending / running / idle / terminated / error；revision 进程内单调递增；可选 error 为最近控制或产物错误。设备自主选择视图，在 result_url 出现或变化时展示结果，新轮次 result_url 清空后回到过程展示。
+快照**不包含 view**。status 为 ready / creating / sending / running / idle / terminated / error；revision 进程内单调递增；可选 error 为最近控制错误，stream_error 表示上游事件流重连状态，preview_error 表示静态产物发布错误。设备自主选择视图，在 result_url 出现或变化时展示结果，新轮次 result_url 清空后回到过程展示。
 
 事件帧：
 
@@ -147,13 +147,13 @@ data 完整保留上游 JSON（含未知字段），类型取 data.type。首次
 
 ## AgentAPI 适配边界
 
-本次以 Mock 打通主流程，保留现有 Provider 和 HTTP 适配器，不扩展真实交互。以下现有协议留待实际部署验证，服务端注入 x-api-key：
+AgentAPI 的真实 HTTP Provider 使用其文档推荐的 `github.com/anthropics/anthropic-sdk-go v1.72.0`；Session、Events、事件 SSE 和 Files API 均通过 SDK 调用。SDK 返回的事件使用 `RawJSON()` 保存，未知字段不会被业务层重写。Mock 用于无密钥自动测试；HTTP Provider 是真实部署路径。服务启动时只读校验预配置的 claudecode agent 和 ready cloud environment，然后服务端注入 x-api-key：
 
-1. POST /v1/sessions，`{ "agent": "agent_id", "environment_id": "env_id" }`。
-2. POST /v1/sessions/{id}/events，`{ "events": [{ "type": "user.message", "input": { "parts": [{ "type": "text", "text": "需求" }] } }] }`。
+1. GET `/v1/agents/{id}` 与 `/v1/environments/{id}` 只读校验配置；POST /v1/sessions，`{ "agent": {"type":"agent", "id":"agent_id", "version": 1}, "environment_id": "env_id" }`（不固定版本时兼容字符串 agent）。
+2. POST /v1/sessions/{id}/events，`{ "events": [{ "type": "user.message", "input": { "parts": [{ "type": "text", "text": "需求" }] }, "payload": {"client_request_id":"cmd_...", "source":"linxi-control"} }] }`；回执优先记录 accepted user.message event ID。
 3. 同一 events 接口发送 `{ "events": [{ "type": "user.interrupt" }] }`。
 4. GET /v1/sessions/{id} 查询真实状态，停止确认后才发送修改需求。
 5. GET /v1/sessions/{id}/events/stream 读取历史与实时 SSE；断线后重连去重。
-6. GET /v1/files?scope_id={session_id} 分页列举；GET /v1/files/{id}/content 下载结果。
+6. GET /v1/files?scope_id={session_id} 分页列举；GET /v1/files/{id}/content 下载结果。文件延迟可见时有限重查；只在有 HTML 且本轮内容指纹变化时发布新预览。
 
 参考仓库仅作协议依据，不作构建依赖。硬件与投屏实现不属于本服务范围。

@@ -2,97 +2,225 @@ package agentapi
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
 )
 
 type HTTP struct {
 	base, key, agent, environment string
-	client                        *http.Client
+	version                       int
+	client                        anthropic.Client
 }
 
 func NewHTTP(base, key, agent, environment string) *HTTP {
-	// A stream has no overall timeout; request contexts own cancellation.
-	return &HTTP{strings.TrimRight(base, "/"), key, agent, environment, &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	base = strings.TrimRight(base, "/") + "/"
+	return &HTTP{
+		base: base, key: key, agent: agent, environment: environment,
+		client: anthropic.NewClient(
+			option.WithoutEnvironmentDefaults(),
+			option.WithBaseURL(base),
+			option.WithAPIKey(key),
+			// Session-level writes are reconciled by Controller; SDK retries would
+			// duplicate an ambiguous Create/Send request.
+			option.WithMaxRetries(0),
+		),
+	}
 }
-func (p *HTTP) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
-	var data io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
+
+// WithVersion pins an existing agent snapshot; zero selects its current version.
+func (p *HTTP) WithVersion(version int) *HTTP { p.version = version; return p }
+
+// Validate checks configured resources without creating or mutating them.
+// The calls use the version of anthropic-sdk-go recommended by AgentAPI.
+func (p *HTTP) Validate(ctx context.Context) error {
+	agent, err := p.client.Beta.Agents.Get(ctx, p.agent, anthropic.BetaAgentGetParams{})
+	if err != nil {
+		return sdkError("GET agent", err)
+	}
+	if string(agent.Type) != "agent" || agent.JSON.ArchivedAt.Valid() {
+		return fmt.Errorf("configured agent must be an available agent")
+	}
+	var agentMeta struct {
+		Runtime string `json:"runtime"`
+	}
+	if err := json.Unmarshal([]byte(agent.RawJSON()), &agentMeta); err != nil || agentMeta.Runtime != "claudecode" {
+		return fmt.Errorf("configured agent must use claudecode runtime")
+	}
+	env, err := p.client.Beta.Environments.Get(ctx, p.environment, anthropic.BetaEnvironmentGetParams{})
+	if err != nil {
+		return sdkError("GET environment", err)
+	}
+	if env.Config.Type != "cloud" || env.JSON.ArchivedAt.Valid() {
+		return fmt.Errorf("configured environment must be an available cloud environment")
+	}
+	return nil
+}
+
+func (p *HTTP) Create(ctx context.Context) (Session, error) {
+	params := anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: param.NewOpt(p.agent)},
+		EnvironmentID: p.environment,
+	}
+	if p.version > 0 {
+		params.Agent = anthropic.BetaSessionNewParamsAgentUnion{OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
+			ID: p.agent, Type: anthropic.BetaManagedAgentsAgentParamsTypeAgent, Version: param.NewOpt(int64(p.version)),
+		}}
+	}
+	res, err := p.client.Beta.Sessions.New(ctx, params)
+	if err != nil {
+		return Session{}, sdkError("POST session", err)
+	}
+	if res == nil || res.ID == "" {
+		return Session{}, &Error{Operation: "POST session", Ambiguous: true, Cause: fmt.Errorf("empty session id")}
+	}
+	return Session{ID: res.ID, Status: string(res.Status)}, nil
+}
+
+func (p *HTTP) SendMessage(ctx context.Context, id string, message Message) (AcceptedInput, error) {
+	params := anthropic.BetaSessionEventSendParams{Events: []anthropic.BetaManagedAgentsEventParamsUnion{{
+		OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
+			Type: anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+			Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{{OfText: &anthropic.BetaManagedAgentsTextBlockParam{
+				Type: anthropic.BetaManagedAgentsTextBlockTypeText, Text: message.Text,
+			}}},
+		},
+	}}}
+	// Keep the SDK's typed request as the source of truth, while adding the
+	// correlation payload supported by AgentAPI's event contract.
+	res, err := p.client.Beta.Sessions.Events.Send(ctx, id, params, option.WithJSONSet("events", []map[string]any{{
+		"type":    "user.message",
+		"input":   map[string]any{"parts": []map[string]string{{"type": "text", "text": message.Text}}},
+		"payload": map[string]string{"client_request_id": message.CommandID, "source": "linxi-control"},
+	}}))
+	if err != nil {
+		return AcceptedInput{}, sdkError("POST message", err)
+	}
+	if res != nil {
+		for _, event := range res.Data {
+			if event.Type == "user.message" && event.ID != "" {
+				return AcceptedInput{EventID: event.ID}, nil
+			}
+		}
+	}
+	// Some deployments return an empty acknowledgement; the stream reconciliation
+	// path can still match the accepted event by its correlation payload.
+	return AcceptedInput{}, nil
+}
+func (p *HTTP) Send(ctx context.Context, id, prompt string) error {
+	_, err := p.SendMessage(ctx, id, Message{Text: prompt})
+	return err
+}
+
+func (p *HTTP) Interrupt(ctx context.Context, id string) error {
+	_, err := p.client.Beta.Sessions.Events.Send(ctx, id, anthropic.BetaSessionEventSendParams{Events: []anthropic.BetaManagedAgentsEventParamsUnion{{
+		OfUserInterrupt: &anthropic.BetaManagedAgentsUserInterruptEventParams{Type: anthropic.BetaManagedAgentsUserInterruptEventParamsTypeUserInterrupt},
+	}}})
+	if err != nil {
+		return sdkError("POST interrupt", err)
+	}
+	return nil
+}
+func (p *HTTP) Status(ctx context.Context, id string) (Session, error) {
+	res, err := p.client.Beta.Sessions.Get(ctx, id, anthropic.BetaSessionGetParams{})
+	if err != nil {
+		return Session{}, sdkError("GET session", err)
+	}
+	if res == nil || res.ID != id || !KnownStatus(string(res.Status)) {
+		return Session{}, fmt.Errorf("AgentAPI returned invalid session state")
+	}
+	return Session{ID: res.ID, Status: string(res.Status)}, nil
+}
+func (p *HTTP) Stream(ctx context.Context, id string, emit func(events.Frame) error) error {
+	stream := p.client.Beta.Sessions.Events.StreamEvents(ctx, id, anthropic.BetaSessionEventStreamParams{})
+	defer stream.Close()
+	for stream.Next() {
+		event := stream.Current()
+		if err := emit(events.Frame{ID: event.ID, Type: event.Type, Data: json.RawMessage(event.RawJSON())}); err != nil {
+			return err
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return sdkError("GET event stream", err)
+	}
+	return io.EOF
+}
+
+func (p *HTTP) Artifacts(ctx context.Context, id string) ([]File, error) {
+	pager := p.client.Beta.Files.ListAutoPaging(ctx, anthropic.BetaFileListParams{ScopeID: param.NewOpt(id), Limit: param.NewOpt(int64(100))})
+	type reference struct {
+		ID, Filename string
+		CreatedAt    time.Time
+	}
+	latest := make(map[string]reference)
+	for pager.Next() {
+		f := pager.Current()
+		previous, exists := latest[f.Filename]
+		if !exists || f.CreatedAt.After(previous.CreatedAt) {
+			latest[f.Filename] = reference{ID: f.ID, Filename: f.Filename, CreatedAt: f.CreatedAt}
+		}
+		if len(latest) > 100 {
+			return nil, fmt.Errorf("preview supports at most 100 files")
+		}
+	}
+	if err := pager.Err(); err != nil {
+		return nil, sdkError("GET files", err)
+	}
+	names := make([]string, 0, len(latest))
+	for name := range latest {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]File, 0, len(names))
+	total := 0
+	for _, name := range names {
+		f := latest[name]
+		resp, err := p.client.Beta.Files.Download(ctx, f.ID, anthropic.BetaFileDownloadParams{})
+		if err != nil {
+			return nil, sdkError("GET file content", err)
+		}
+		b, err := io.ReadAll(io.LimitReader(resp.Body, (10<<20)+1))
+		resp.Body.Close()
 		if err != nil {
 			return nil, err
 		}
-		data = bytes.NewReader(b)
+		if len(b) > 10<<20 {
+			return nil, fmt.Errorf("artifact exceeds 10 MiB")
+		}
+		total += len(b)
+		if total > 64<<20 {
+			return nil, fmt.Errorf("preview exceeds 64 MiB")
+		}
+		out = append(out, File{Path: f.Filename, Data: b})
 	}
-	r, err := http.NewRequestWithContext(ctx, method, p.base+path, data)
-	if err != nil {
-		return nil, err
-	}
-	r.Header.Set("x-api-key", p.key)
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Accept", "application/json, text/event-stream")
-	resp, err := p.client.Do(r)
-	if err != nil {
-		return nil, fmt.Errorf("AgentAPI request failed: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		resp.Body.Close()
-		return nil, fmt.Errorf("AgentAPI %s: HTTP %d", method, resp.StatusCode)
-	}
-	return resp, nil
-}
-func (p *HTTP) json(ctx context.Context, method, path string, body, out any) error {
-	r, err := p.request(ctx, method, path, body)
-	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-	if out == nil {
-		_, err = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
-		return err
-	}
-	return json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(out)
-}
-func (p *HTTP) Create(ctx context.Context) (Session, error) {
-	var s Session
-	err := p.json(ctx, "POST", "/v1/sessions", map[string]any{"agent": p.agent, "environment_id": p.environment}, &s)
-	if err == nil && s.ID == "" {
-		err = fmt.Errorf("AgentAPI returned an empty session id")
-	}
-	return s, err
-}
-func sessionPath(id string) string { return "/v1/sessions/" + url.PathEscape(id) }
-func (p *HTTP) Send(ctx context.Context, id, prompt string) error {
-	return p.json(ctx, "POST", sessionPath(id)+"/events", map[string]any{"events": []any{map[string]any{"type": "user.message", "input": map[string]any{"parts": []any{map[string]string{"type": "text", "text": prompt}}}}}}, nil)
-}
-func (p *HTTP) Interrupt(ctx context.Context, id string) error {
-	return p.json(ctx, "POST", sessionPath(id)+"/events", map[string]any{"events": []any{map[string]string{"type": "user.interrupt"}}}, nil)
-}
-func (p *HTTP) Status(ctx context.Context, id string) (Session, error) {
-	var s Session
-	err := p.json(ctx, "GET", sessionPath(id), nil, &s)
-	return s, err
-}
-func (p *HTTP) Stream(ctx context.Context, id string, emit func(events.Frame) error) error {
-	r, err := p.request(ctx, "GET", sessionPath(id)+"/events/stream", nil)
-	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-	return DecodeSSE(r.Body, emit)
+	return out, nil
 }
 
-// DecodeSSE preserves provider JSON, including fields unknown to this version.
+var statusCodePattern = regexp.MustCompile(`\b([45][0-9]{2})\b`)
+
+func sdkError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	wrapped := &Error{Operation: operation, Cause: err, Ambiguous: strings.HasPrefix(operation, "POST")}
+	if match := statusCodePattern.FindStringSubmatch(err.Error()); len(match) == 2 {
+		fmt.Sscanf(match[1], "%d", &wrapped.StatusCode)
+	}
+	return wrapped
+}
+
+// DecodeSSE remains a small compatibility helper for local contract tests and
+// non-SDK fixtures; the live HTTP Provider consumes streams with the SDK above.
 func DecodeSSE(r io.Reader, emit func(events.Frame) error) error {
 	s := bufio.NewScanner(r)
 	s.Buffer(make([]byte, 4096), 4<<20)
@@ -151,74 +279,4 @@ func DecodeSSE(r io.Reader, emit func(events.Frame) error) error {
 		return err
 	}
 	return io.EOF
-}
-func (p *HTTP) Artifacts(ctx context.Context, id string) ([]File, error) {
-	type reference struct {
-		ID        string    `json:"id"`
-		Filename  string    `json:"filename"`
-		CreatedAt time.Time `json:"created_at"`
-	}
-	latest := make(map[string]reference)
-	pages := make(map[string]bool)
-	page := ""
-	for {
-		if pages[page] {
-			return nil, fmt.Errorf("repeated file page cursor")
-		}
-		pages[page] = true
-		q := url.Values{"scope_id": {id}, "limit": {"100"}}
-		if page != "" {
-			q.Set("page", page)
-		}
-		var listing struct {
-			Data     []reference `json:"data"`
-			NextPage string      `json:"next_page"`
-		}
-		if err := p.json(ctx, "GET", "/v1/files?"+q.Encode(), nil, &listing); err != nil {
-			return nil, err
-		}
-		for _, f := range listing.Data {
-			previous, exists := latest[f.Filename]
-			// A session can export index.html again on later turns. Never let
-			// an older version overwrite the latest when replaying all files.
-			if !exists || f.CreatedAt.After(previous.CreatedAt) {
-				latest[f.Filename] = f
-			}
-		}
-		if len(latest) > 100 {
-			return nil, fmt.Errorf("preview supports at most 100 files")
-		}
-		if listing.NextPage == "" {
-			break
-		}
-		page = listing.NextPage
-	}
-	names := make([]string, 0, len(latest))
-	for name := range latest {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	out := make([]File, 0, len(names))
-	total := 0
-	for _, name := range names {
-		f := latest[name]
-		r, err := p.request(ctx, "GET", "/v1/files/"+url.PathEscape(f.ID)+"/content", nil)
-		if err != nil {
-			return nil, err
-		}
-		b, err := io.ReadAll(io.LimitReader(r.Body, (10<<20)+1))
-		r.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-		if len(b) > 10<<20 {
-			return nil, fmt.Errorf("artifact exceeds 10 MiB")
-		}
-		total += len(b)
-		if total > 64<<20 {
-			return nil, fmt.Errorf("preview exceeds 64 MiB")
-		}
-		out = append(out, File{Path: f.Filename, Data: b})
-	}
-	return out, nil
 }

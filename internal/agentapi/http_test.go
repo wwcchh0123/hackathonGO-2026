@@ -16,9 +16,11 @@ import (
 func TestCloudContractAndUnmodifiedEvents(t *testing.T) {
 	raw := `{"id":"evt_1","type":"agent.message","unknown":{"keep":true},"content":[{"type":"text","text":"你好"}]}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("x-api-key") != "test-key" {
 			t.Error("missing provider authentication")
 		}
+
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v1/sessions":
 			var body map[string]string
@@ -102,8 +104,28 @@ func TestProviderErrorsDoNotEchoSecrets(t *testing.T) {
 	}
 }
 
+func TestPinnedAgentVersionUsesSDKAgentReference(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		agent, ok := body["agent"].(map[string]any)
+		if !ok || agent["id"] != "agent" || agent["version"] != float64(7) || agent["type"] != "agent" {
+			t.Fatalf("unversioned agent reference: %#v", body["agent"])
+		}
+		fmt.Fprint(w, `{"id":"ses_7","status":"idle"}`)
+	}))
+	defer upstream.Close()
+	if _, err := NewHTTP(upstream.URL, "key", "agent", "env").WithVersion(7).Create(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPreviewUsesNewestExportAcrossFilePages(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/files":
 			if r.URL.Query().Get("page") == "older" {

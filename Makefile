@@ -1,4 +1,4 @@
-.PHONY: install dev build test check run clean
+.PHONY: install dev build test coverage check run clean
 
 install:
 	go mod download
@@ -12,6 +12,10 @@ build:
 
 test:
 	go test -race ./...
+
+coverage:
+	go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
 
 check:
 	test -z "$$(gofmt -l cmd internal)"

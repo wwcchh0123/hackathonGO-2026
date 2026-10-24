@@ -1,5 +1,8 @@
 # 灵矽语音编程工作站
 
+[![CI](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/codecov/c/gh/wwcchh0123/hackathonGO-2026?label=coverage)](https://app.codecov.io/gh/wwcchh0123/hackathonGO-2026)
+
 基于 [issue #6 的整体设计](https://github.com/wwcchh0123/hackathonGO-2026/issues/6)：灵矽云理解语音，Go 控制服务编排七牛 AgentAPI，设备拉流渲染并投屏，大屏仅负责显示。
 
 当前提供 **Go 控制服务、完整模拟链路**，以及基于本机 AgentAPI 实际合约的 HTTP 适配器。硬件端暂不选择技术栈，只定义协议边界；真实 ASR/TTS、设备 MCP 传输和 AirPlay 发送端后续接入。浏览器页面仅用于开发联调，随 Go 二进制嵌入。
@@ -42,7 +45,7 @@ internal/
   transport/mcp/           灵矽云端 MCP 工具，官方 Go SDK
   transport/httpapi/       HTTP、设备 WebSocket、SSE、访问鉴权
     devui/                 原生 HTML/JS 联调页面，go:embed，无构建步骤
-docs/                      架构与协议、外部接入约定
+docs/                      接口协议与外部接入约定
 ```
 
 设备不持有 AgentAPI 凭据，也不包含编程执行逻辑。`DEV_TOOLS=false` 同时关闭模拟页面、静态联调资源和 `/api/commands`；硬件通过独立的设备协议接入。
@@ -75,8 +78,9 @@ make build run
 
 ```sh
 make check test build
+make coverage
 ```
 
-包含 gofmt 检查、Go vet、Go race 测试和二进制构建。测试只使用本地临时目录和内存/HTTP 假上游，无外部密钥，通常数秒完成；依赖缺失直接失败。覆盖打断后的等待顺序、同会话修改/继续、新会话替换、SSE 回放边界、原始 JSON 保留、MCP → 设备 WebSocket/SSE → 结果托管。GitHub Actions 运行同一命令。
+包含 gofmt 检查、Go vet、Go race 测试、二进制构建和 Codecov 上传所需的覆盖率报告。测试只使用本地临时目录和内存/HTTP 假上游，无外部密钥，通常数秒完成；依赖缺失直接失败。覆盖打断后的等待顺序、同会话修改/继续、新会话替换、SSE 回放边界、原始 JSON 保留、MCP → 设备 WebSocket/SSE → 结果托管。GitHub Actions 运行同一组检查。
 
-详细设计和后续接入点见 [架构说明](docs/architecture.md)、[接口协议](docs/protocol.md)、[硬件接入边界](docs/device-contract.md)。外部依据为本机 `~/qbox/agentapi` 与 `/Users/jicarl/qiniu/Xrobot-docs`，无需将它们作为构建依赖。
+接口约定见 [协议文档](docs/protocol.md)。外部依据为本机 `~/qbox/agentapi` 与 `/Users/jicarl/qiniu/Xrobot-docs`，无需将它们作为构建依赖。

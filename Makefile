@@ -8,7 +8,6 @@ dev:
 
 build:
 	go build -o bin/control ./cmd/control
-	go build -o bin/device-display ./cmd/device-display
 
 test:
 	go test -race ./...

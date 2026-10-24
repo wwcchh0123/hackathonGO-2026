@@ -104,19 +104,25 @@ func run() error {
 }
 
 func loadConfig() (config, error) {
+	// Keep device-only settings here instead of adding them to the control
+	// service. The defaults describe the Raspberry Pi proof-of-concept and its
+	// validated Windows receiver, so a local run works without a long command
+	// line. Deployments can override every value through the environment.
 	c := config{
-		ControlURL:         env("CONTROL_URL", "http://127.0.0.1:8080"),
-		ControlToken:       os.Getenv("CONTROL_TOKEN"),
-		ListenAddr:         env("DISPLAY_LISTEN_ADDR", "127.0.0.1:8787"),
-		ViewURL:            env("DISPLAY_URL", "http://127.0.0.1:8787"),
-		Browser:            os.Getenv("BROWSER_BIN"),
-		BrowserStart:       boolEnv("BROWSER_START", true),
-		Width:              intEnv("SCREEN_WIDTH", 1920),
-		Height:             intEnv("SCREEN_HEIGHT", 1080),
-		AirPlayTarget:      os.Getenv("AIRPLAY_TARGET"),
-		AirPlayPort:        intEnv("AIRPLAY_PORT", 7001),
-		AirPlayPassword:    os.Getenv("AIRPLAY_PASSWORD"),
-		AirPlayName:        env("AIRPLAY_NAME", "AirPlay display"),
+		ControlURL:    env("CONTROL_URL", "http://127.0.0.1:8080"),
+		ControlToken:  os.Getenv("CONTROL_TOKEN"),
+		ListenAddr:    env("DISPLAY_LISTEN_ADDR", "127.0.0.1:8787"),
+		ViewURL:       env("DISPLAY_URL", "http://127.0.0.1:8787"),
+		Browser:       os.Getenv("BROWSER_BIN"),
+		BrowserStart:  boolEnv("BROWSER_START", true),
+		Width:         intEnv("SCREEN_WIDTH", 1920),
+		Height:        intEnv("SCREEN_HEIGHT", 1080),
+		AirPlayTarget: env("AIRPLAY_TARGET", "192.168.1.4"),
+		AirPlayPort:   intEnv("AIRPLAY_PORT", 7001),
+		// 3939 is the PIN of the local validation receiver. Set a different
+		// value in any deployment that uses another screen or PIN.
+		AirPlayPassword:    env("AIRPLAY_PASSWORD", "3939"),
+		AirPlayName:        env("AIRPLAY_NAME", "Windows AirPlay@MISAKI-DESKTOP"),
 		AirPlayCredentials: env("AIRPLAY_CREDENTIALS", "/tmp/doubletake/credentials.json"),
 		AirPlayFPS:         intEnv("AIRPLAY_FPS", 20),
 		AirPlayBitrate:     intEnv("AIRPLAY_BITRATE", 3000),

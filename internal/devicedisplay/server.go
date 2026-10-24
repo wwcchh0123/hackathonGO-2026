@@ -24,6 +24,8 @@ func NewView(store *Store, airplayTarget string) *View {
 	return &View{store: store, airplayTarget: airplayTarget}
 }
 
+// Handler serves only the local renderer and its local event stream. The
+// control token is never exposed to this HTTP server or to the browser.
 func (v *View) Handler() http.Handler {
 	web, err := fs.Sub(webFiles, "web")
 	if err != nil {
@@ -42,6 +44,9 @@ func (v *View) Handler() http.Handler {
 	return mux
 }
 
+// events exposes a second, local-only SSE stream. The device client consumes
+// the authenticated control-service stream; Chromium consumes this stream so
+// the renderer never needs the control token.
 func (v *View) events(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -56,6 +61,9 @@ func (v *View) events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming is unavailable", http.StatusInternalServerError)
 		return
 	}
+	// Subscribe before taking the snapshot. That closes the history/live race:
+	// an event arriving between these two operations is queued and then safely
+	// ignored by the browser's event-ID de-duplication if it was in history.
 	updates, unsubscribe := v.store.Subscribe()
 	defer unsubscribe()
 	snapshot, events := v.store.Snapshot()
@@ -96,6 +104,9 @@ func (v *View) events(w http.ResponseWriter, r *http.Request) {
 }
 
 func (v *View) meta(snapshot device.Snapshot, events []Event) map[string]any {
+	// The control-service SSE intentionally contains only raw events. This
+	// lightweight metadata is derived locally for the visual header and does
+	// not become a second protocol or a source of business state.
 	meta := map[string]any{
 		"sessionId":        snapshot.SessionID,
 		"runtime":          "claudecode",

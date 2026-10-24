@@ -33,7 +33,9 @@ func New(cfg Config) *Runner { return &Runner{cfg: cfg} }
 
 // Run keeps the sender available while the device process is running. The
 // sender is intentionally an external dependency: AirPlay screen mirroring
-// needs access to the device display and its platform codecs.
+// needs access to the device display and its platform codecs. A sender exit
+// is treated as recoverable, because a receiver can temporarily disappear
+// from the LAN; Run retries after a short delay until the device shuts down.
 func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.Target == "" {
 		slog.Info("AirPlay disabled", "reason", "AIRPLAY_TARGET is empty")
@@ -67,6 +69,8 @@ func (r *Runner) runOnce(ctx context.Context) error {
 			return fmt.Errorf("prepare AirPlay credentials: %w", err)
 		}
 	}
+	// These flags mirror the tested Linux arm64 setup: video-only mirroring,
+	// H.264 encoding, and a low target latency suitable for a live dashboard.
 	args := []string{
 		"-target", r.cfg.Target,
 		"-port", strconv.Itoa(r.cfg.Port),

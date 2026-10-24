@@ -6,6 +6,8 @@ import (
 )
 
 func TestConsumeSSEKeepsRawJSONAndFields(t *testing.T) {
+	// The control service writes one SSE frame per event. This test protects
+	// escaped newlines inside JSON and ignores keep-alive comments.
 	var got []sseFrame
 	err := consumeSSE(strings.NewReader("id: evt_1\nevent: agent_event\ndata: {\"text\":\"line\\nnext\"}\n\n: keep-alive\n\nid: evt_2\nevent: agent_event\ndata: {\"ok\":true}\n\n"), func(frame sseFrame) error {
 		got = append(got, frame)

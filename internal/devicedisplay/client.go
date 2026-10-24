@@ -29,6 +29,10 @@ type Client struct {
 	store      *Store
 }
 
+// NewClient validates the control-service origin once, then reuses it for the
+// WebSocket snapshot channel and the per-session SSE channel. Keeping both
+// URLs derived from one configured origin avoids accidentally connecting the
+// device display to two different control services.
 func NewClient(cfg ClientConfig, store *Store) (*Client, error) {
 	base, err := url.Parse(strings.TrimRight(cfg.ControlURL, "/"))
 	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {
@@ -42,6 +46,9 @@ func NewClient(cfg ClientConfig, store *Store) (*Client, error) {
 }
 
 func (c *Client) Run(ctx context.Context) error {
+	// The WebSocket is the device control channel. Reconnecting it is enough
+	// to obtain a fresh snapshot; the currently selected session is then used
+	// to rebuild the independent event stream below.
 	backoff := time.Second
 	for {
 		err := c.runConnection(ctx)
@@ -93,6 +100,9 @@ func (c *Client) runConnection(ctx context.Context) error {
 			return fmt.Errorf("decode device snapshot: %w", err)
 		}
 		if snapshot.SessionID != session {
+			// Cancel the old SSE reader before changing the store. This ordering
+			// prevents a late event from the previous session entering the new
+			// timeline during a session switch.
 			cancelStream()
 			c.store.SetSnapshot(snapshot)
 			streamCtx, cancel := context.WithCancel(ctx)
@@ -108,6 +118,9 @@ func (c *Client) runConnection(ctx context.Context) error {
 }
 
 func (c *Client) streamSession(ctx context.Context, session string) {
+	// Keep the SSE stream open for the whole session. The server sends history
+	// first and then waits for live frames, so a normal idle status does not
+	// close the connection.
 	lastID := c.store.LastEventID(session)
 	for {
 		err := c.streamOnce(ctx, session, lastID)
@@ -127,6 +140,9 @@ func (c *Client) streamSession(ctx context.Context, session string) {
 }
 
 func (c *Client) streamOnce(ctx context.Context, session, lastID string) error {
+	// Last-Event-ID lets the server replay from the last frame the device
+	// stored. AppendEvent remains the final guard because a server may replay
+	// the cursor itself when a reconnect races with a live write.
 	endpoint := *c.baseURL
 	endpoint.Path = "/api/sessions/" + url.PathEscape(session) + "/events"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -171,6 +187,9 @@ type sseFrame struct {
 }
 
 func consumeSSE(reader io.Reader, emit func(sseFrame) error) error {
+	// Scanner's default 64 KiB limit is too small for a user prompt or tool
+	// result. The larger bounded buffer preserves one complete SSE data line
+	// without allowing an unbounded response to consume device memory.
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	var frame sseFrame

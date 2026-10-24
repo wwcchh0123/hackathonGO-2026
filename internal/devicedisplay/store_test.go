@@ -8,6 +8,8 @@ import (
 )
 
 func TestStoreResetsOnSessionChangeAndDeduplicates(t *testing.T) {
+	// Reconnects can replay an already seen frame; a new session must still
+	// start with an empty timeline.
 	store := NewStore()
 	store.SetSnapshot(device.Snapshot{SessionID: "ses_1", Status: "running"})
 	if !store.AppendEvent(Event{ID: "evt_1", Data: json.RawMessage(`{"type":"agent.message"}`)}) {

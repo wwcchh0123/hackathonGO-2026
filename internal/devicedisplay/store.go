@@ -37,6 +37,9 @@ func NewStore() *Store {
 	}
 }
 
+// Snapshot returns a consistent view for the local HTTP renderer. Event data
+// is copied so a browser request never observes a slice while the SSE client
+// is appending a newly received frame.
 func (s *Store) Snapshot() (device.Snapshot, []Event) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -44,6 +47,9 @@ func (s *Store) Snapshot() (device.Snapshot, []Event) {
 	return s.snapshot, events
 }
 
+// LastEventID is the cursor used when an SSE connection is rebuilt. The
+// control service replays from that cursor, while AppendEvent still performs
+// ID de-duplication to make reconnects safe when a cursor is stale.
 func (s *Store) LastEventID(session string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -53,6 +59,9 @@ func (s *Store) LastEventID(session string) string {
 	return s.events[len(s.events)-1].ID
 }
 
+// Subscribe registers one local browser stream. Notifications are hints: the
+// browser can reconnect and read the complete history from Snapshot if it was
+// slower than the device client.
 func (s *Store) Subscribe() (<-chan Update, func()) {
 	ch := make(chan Update, 64)
 	s.mu.Lock()
@@ -65,6 +74,9 @@ func (s *Store) Subscribe() (<-chan Update, func()) {
 	}
 }
 
+// SetSnapshot is the session boundary. A new AgentAPI session invalidates the
+// old timeline, while status changes within the same session leave its event
+// history intact.
 func (s *Store) SetSnapshot(snapshot device.Snapshot) {
 	s.mu.Lock()
 	reset := s.snapshot.SessionID != "" && snapshot.SessionID != s.snapshot.SessionID
@@ -83,6 +95,9 @@ func (s *Store) SetSnapshot(snapshot device.Snapshot) {
 	s.publish(subscribers, Update{Kind: kind, Session: snapshot.SessionID, Snapshot: snapshot})
 }
 
+// AppendEvent keeps the provider JSON untouched. Rendering concerns belong to
+// the browser, so this layer only records the upstream ID and publishes a
+// notification to local views.
 func (s *Store) AppendEvent(event Event) bool {
 	s.mu.Lock()
 	if event.ID != "" {

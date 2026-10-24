@@ -1,3 +1,6 @@
+// The page is intentionally a dependency-free kiosk view. It receives only
+// the local SSE stream, turns event types into visual cards, and never knows
+// the control-service token or how AgentAPI commands are executed.
 const $ = (id) => document.getElementById(id);
 const state = { session: '', events: [], seen: new Set(), tools: new Map(), types: new Map(), last: null, total: 0 };
 const palette = { 'user.message':'#e7a6b7', 'agent.thinking':'#e7bd7c', 'agent.message':'#a9e7c1', 'agent.tool_use':'#7ed7d4', 'agent.tool_result':'#80b9bd', 'session.status_idle':'#7ed7d4' };

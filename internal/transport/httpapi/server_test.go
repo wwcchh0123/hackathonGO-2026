@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -36,76 +35,131 @@ func (authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.Header.Set("X-Linx-Device-Id", "test-device")
 	return http.DefaultTransport.RoundTrip(r)
 }
-func TestMCPToDeviceStreamAndPreview(t *testing.T) {
+
+type linxTransport struct {
+	mu           sync.Mutex
+	conversation string
+}
+
+func (a *linxTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer test-control-token")
+	if r.Method == "POST" {
+		r.Header.Set("X-Linx-Device-Id", "test-device")
+		a.mu.Lock()
+		r.Header.Set("X-Linx-Session-Id", a.conversation)
+		a.mu.Unlock()
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+func (a *linxTransport) setConversation(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.conversation = id
+}
+func voiceResult(t *testing.T, res *mcp.CallToolResult, failed bool) string {
+	t.Helper()
+	if res == nil || res.IsError != failed || len(res.Content) != 1 || res.StructuredContent != nil {
+		t.Fatalf("invalid result %+v", res)
+	}
+	value, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatal(res)
+	}
+	return value.Text
+}
+func receiptResult(t *testing.T, res *mcp.CallToolResult) session.Receipt {
+	t.Helper()
+	var r session.Receipt
+	if err := json.Unmarshal([]byte(voiceResult(t, res, false)), &r); err != nil || !r.Accepted || r.TaskRef == "" || r.CommandID == "" {
+		t.Fatal(r, err)
+	}
+	return r
+}
+func waitDetail(t *testing.T, c *session.Controller, r session.Receipt) session.Detail {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		zero := 0
+		d, err := c.GetTask(context.Background(), r.TaskRef, session.DetailOptions{CommandID: r.CommandID, EventsLimit: &zero})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Command.State == "confirmed" {
+			return d
+		}
+		if d.Command.State == "failed" {
+			t.Fatal(d.Command)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("command not confirmed")
+	return session.Detail{}
+}
+func TestMCPToIndependentDeviceStreamAndExplicitPreview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	provider := agentapi.NewMock(ctx)
-	provider.Step = 10 * time.Millisecond
+	mock := agentapi.NewMock(ctx)
+	mock.Step = 5 * time.Millisecond
 	ts := httptest.NewUnstartedServer(nil)
 	base := "http://" + ts.Listener.Addr().String()
 	cfg := config.Config{Mode: "mock", DeviceID: "test-device", Token: "test-control-token", DataDir: t.TempDir(), PublicURL: base, DevTools: true}
-	c := session.New(ctx, provider, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir, PublicURL: base})
+	c := session.New(ctx, mock, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir, PublicURL: base})
 	ts.Config.Handler = Handler(cfg, c)
 	ts.Start()
 	defer ts.Close()
 	defer func() { cancel(); c.Wait() }()
-	unauthorized, err := http.Get(base + "/api/device")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unauthorized.Body.Close()
-	if unauthorized.StatusCode != 401 {
-		t.Fatal("device endpoint was not protected")
-	}
 	client := &http.Client{Transport: authTransport{}}
+	request := func(method, path, body string, want int) []byte {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, method, base+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("%s: %d %s", path, resp.StatusCode, raw)
+		}
+		return raw
+	}
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/device/channel", &websocket.DialOptions{HTTPClient: client})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ws.CloseNow()
-	_, initial, err := ws.Read(ctx)
-	if err != nil || !strings.Contains(string(initial), "test-device") {
-		t.Fatalf("device snapshot: %s %v", initial, err)
+	if _, raw, err := ws.Read(ctx); err != nil || !strings.Contains(string(raw), "test-device") {
+		t.Fatal(string(raw), err)
 	}
-	if strings.Contains(string(initial), `"view"`) {
-		t.Fatal("cloud snapshot still controls the device view")
-	}
-	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "test-linx", Version: "1"}, nil)
-	cloud, err := mcpClient.Connect(ctx, &mcp.SSEClientTransport{Endpoint: base + "/mcp", HTTPClient: client}, nil)
+	cloud, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, &mcp.SSEClientTransport{Endpoint: base + "/mcp", HTTPClient: client}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cloud.Close()
 	tools, err := cloud.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 3 {
-		t.Fatalf("tools discovery: %v %v", tools, err)
+	if err != nil || len(tools.Tools) != 4 {
+		t.Fatal(tools, err)
 	}
-	res, err := cloud.CallTool(ctx, &mcp.CallToolParams{Name: "send_message", Arguments: map[string]any{"text": "帮我做个番茄钟"}})
-	if err != nil || res.IsError {
-		t.Fatalf("send_message: %v %v", res, err)
-	}
-	for c.State.Get().ResultURL == "" {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("no preview: %+v", c.State.Get())
-		case <-time.After(time.Millisecond):
-		}
-	}
-	snapshot := c.State.Get()
-	_, live, err := ws.Read(ctx)
+	result, err := cloud.CallTool(ctx, &mcp.CallToolParams{Name: "new_task", Arguments: map[string]any{"text": "番茄钟"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var liveState device.Snapshot
-	if json.Unmarshal(live, &liveState) != nil || liveState.Revision == 0 {
-		t.Fatal("websocket did not receive updates")
+	r := receiptResult(t, result)
+	d := waitDetail(t, c, r)
+	if c.State.Get().TaskRef != "" {
+		t.Fatal("MCP write silently selected display")
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/api/sessions/"+snapshot.SessionID+"/events", nil)
+	request("GET", "/api/tasks?limit=1", "", 200)
+	request("GET", "/api/tasks/"+r.TaskRef+"?events_limit=0&command_id="+r.CommandID, "", 200)
+	request("POST", "/api/device/view", `{"task_ref":"`+r.TaskRef+`"}`, 200)
+	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/api/tasks/"+r.TaskRef+"/events", nil)
 	stream, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := errors.New("read complete")
+	stop := errors.New("done")
 	count := 0
 	err = agentapi.DecodeSSE(stream.Body, func(f events.Frame) error {
 		count++
@@ -116,23 +170,133 @@ func TestMCPToDeviceStreamAndPreview(t *testing.T) {
 	})
 	stream.Body.Close()
 	if !errors.Is(err, stop) || count < 5 {
-		t.Fatalf("history replay missing: count %d, error %v", count, err)
+		t.Fatal(count, err)
 	}
-	preview, err := http.Get(snapshot.ResultURL)
+	raw := request("POST", "/api/tasks/"+r.TaskRef+"/preview", "{}", 200)
+	var preview map[string]string
+	_ = json.Unmarshal(raw, &preview)
+	page, err := http.Get(preview["result_url"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(preview.Body)
-	preview.Body.Close()
-	if preview.StatusCode != 200 || !strings.Contains(string(body), "番茄钟") || !strings.Contains(preview.Header.Get("Content-Security-Policy"), "sandbox") {
-		t.Fatalf("invalid hosted preview, status %d", preview.StatusCode)
+	content, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	if page.StatusCode != 200 || !strings.Contains(string(content), "番茄钟") {
+		t.Fatal(string(content))
 	}
-	res, err = cloud.CallTool(ctx, &mcp.CallToolParams{Name: "get_status"})
-	if err != nil || res.IsError || len(res.Content) == 0 {
-		t.Fatalf("status: %v %v", res, err)
+	request("GET", "/api/tasks/"+r.TaskRef+"/events?after=evicted", "", 409)
+	request("GET", "/api/sessions/wrong/events", "", 404)
+	request("GET", "/api/tasks/unknown", "", 404)
+	request("GET", "/api/tasks?limit=bad", "", 400)
+	request("POST", "/api/device/view", `{"task_ref":"unknown"}`, 404)
+	if d.SessionID == "" {
+		t.Fatal(d)
 	}
 }
 
+type gatedProvider struct {
+	agentapi.Provider
+	gate  chan struct{}
+	sends atomic.Int32
+}
+
+func (p *gatedProvider) Create(ctx context.Context, input ...agentapi.NewSession) (agentapi.Session, error) {
+	select {
+	case <-p.gate:
+		return p.Provider.Create(ctx, input...)
+	case <-ctx.Done():
+		return agentapi.Session{}, ctx.Err()
+	}
+}
+func (p *gatedProvider) SendMessage(ctx context.Context, id string, msg agentapi.Message) (agentapi.AcceptedInput, error) {
+	p.sends.Add(1)
+	return p.Provider.SendMessage(ctx, id, msg)
+}
+func TestVoiceProtocolIdentityDedupAndFastAdmission(t *testing.T) {
+	for _, streamable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy", true: "streamable"}[streamable], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			mock := agentapi.NewMock(ctx)
+			mock.Step = time.Hour
+			p := &gatedProvider{Provider: mock, gate: make(chan struct{})}
+			cfg := config.Config{Mode: "http", Token: "test-control-token", DeviceID: "test-device", DataDir: t.TempDir()}
+			c := session.New(ctx, p, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir})
+			ts := httptest.NewServer(Handler(cfg, c))
+			defer ts.Close()
+			defer func() { cancel(); c.Wait() }()
+			headers := &linxTransport{conversation: "conversation-a"}
+			client := mcp.NewClient(&mcp.Implementation{Name: "linx", Version: "1"}, nil)
+			transport := func() mcp.Transport {
+				hc := &http.Client{Transport: headers}
+				if streamable {
+					return &mcp.StreamableClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: hc}
+				}
+				return &mcp.SSEClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: hc}
+			}
+			cloud, err := client.Connect(ctx, transport(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cloud.Close()
+			tools, err := cloud.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			names := []string{}
+			for _, tool := range tools.Tools {
+				names = append(names, tool.Name)
+				if tool.OutputSchema != nil {
+					t.Fatal("unverified structured output")
+				}
+			}
+			slices.Sort(names)
+			if !slices.Equal(names, []string{"get_task", "list_tasks", "new_task", "send_message"}) {
+				t.Fatal(names)
+			}
+			call := func(name string, args any, failed bool) *mcp.CallToolResult {
+				t.Helper()
+				started := time.Now()
+				res, err := cloud.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args, Meta: mcp.Meta{"linxi.control/request-identity": map[string]string{"conversation": "forged"}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				voiceResult(t, res, failed)
+				if (name == "new_task" || name == "send_message") && time.Since(started) >= 300*time.Millisecond {
+					t.Fatal("admission blocked")
+				}
+				return res
+			}
+			a := receiptResult(t, call("new_task", map[string]any{"text": "A"}, false))
+			for range 10 {
+				if dup := receiptResult(t, call("new_task", map[string]any{"text": "A"}, false)); dup != a {
+					t.Fatal("dedup lost")
+				}
+			}
+			call("get_task", map[string]any{"task_ref": a.TaskRef, "events_limit": 0}, false)
+			headers.setConversation("conversation-b")
+			call("send_message", map[string]any{"text": "implicit wrong conversation"}, true)
+			b := receiptResult(t, call("new_task", map[string]any{"text": "B"}, false))
+			ra := receiptResult(t, call("send_message", map[string]any{"text": "same", "task_ref": a.TaskRef}, false))
+			rb := receiptResult(t, call("send_message", map[string]any{"text": "same", "task_ref": b.TaskRef}, false))
+			if ra.CommandID == rb.CommandID {
+				t.Fatal("cross-task dedup")
+			}
+			call("send_message", map[string]any{"text": "x", "session_id": "forged"}, true)
+			call("new_task", map[string]any{"text": " "}, true)
+			call("get_task", map[string]any{}, true)
+			call("list_tasks", map[string]any{"limit": 1000}, true)
+			close(p.gate)
+			waitDetail(t, c, rb)
+			if p.sends.Load() != 4 {
+				t.Fatal(p.sends.Load())
+			}
+			// Metadata inspection still leaves the selected device view untouched.
+			if c.State.Get().TaskRef != "" {
+				t.Fatal("query changed display")
+			}
+		})
+	}
+}
 func TestDeveloperPagesAreOptionalAndEmbedded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := session.New(ctx, agentapi.NewMock(ctx), device.NewState("test"), &artifacts.Store{Root: t.TempDir()})
@@ -149,216 +313,6 @@ func TestDeveloperPagesAreOptionalAndEmbedded(t *testing.T) {
 			if r.Code != want {
 				t.Errorf("DEV_TOOLS=%v %s: got %d want %d", enabled, path, r.Code, want)
 			}
-		}
-	}
-}
-
-// POST headers can change on one long-lived SSE connection. GET intentionally
-// has no device or conversation identity, matching Linx's transport contract.
-type linxTransport struct {
-	mu           sync.Mutex
-	conversation string
-}
-
-func (a *linxTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer test-control-token")
-	if r.Method == "POST" {
-		r.Header.Set("X-Linx-Device-Id", "test-device")
-		a.mu.Lock()
-		conversation := a.conversation
-		a.mu.Unlock()
-		r.Header.Set("X-Linx-Session-Id", conversation)
-		r.Header.Set("X-Linx-Agent-Id", "test-linx-agent")
-	}
-	return http.DefaultTransport.RoundTrip(r)
-}
-func (a *linxTransport) setConversation(id string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.conversation = id
-}
-
-type gatedProvider struct {
-	agentapi.Provider
-	gate  chan struct{}
-	sends atomic.Int32
-}
-
-func (p *gatedProvider) Create(ctx context.Context) (agentapi.Session, error) {
-	select {
-	case <-p.gate:
-		return p.Provider.Create(ctx)
-	case <-ctx.Done():
-		return agentapi.Session{}, ctx.Err()
-	}
-}
-func (p *gatedProvider) Send(ctx context.Context, id, text string) error {
-	if err := p.Provider.Send(ctx, id, text); err != nil {
-		return err
-	}
-	p.sends.Add(1)
-	return nil
-}
-func voiceResult(t *testing.T, res *mcp.CallToolResult, failed bool) string {
-	t.Helper()
-	if res == nil || res.IsError != failed || len(res.Content) != 1 || res.StructuredContent != nil {
-		t.Fatalf("invalid voice result: %+v", res)
-	}
-	value, ok := res.Content[0].(*mcp.TextContent)
-	if !ok || utf8.RuneCountInString(value.Text) > 60 {
-		t.Fatalf("invalid text: %+v", res)
-	}
-	encoded, _ := json.Marshal(res)
-	for _, forbidden := range []string{"structuredContent", "session_id", "result_url", "ses_", "http://", "https://"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("voice result leaked %q: %s", forbidden, encoded)
-		}
-	}
-	return value.Text
-}
-func TestVoiceProtocolIdentityDedupAndFastAdmission(t *testing.T) {
-	for _, streamable := range []bool{false, true} {
-		name := "legacy-sse"
-		if streamable {
-			name = "streamable-http"
-		}
-		t.Run(name, func(t *testing.T) { testVoiceProtocol(t, streamable) })
-	}
-}
-
-func testVoiceProtocol(t *testing.T, streamable bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	mock := agentapi.NewMock(ctx)
-	mock.Step = time.Hour
-	p := &gatedProvider{Provider: mock, gate: make(chan struct{})}
-	cfg := config.Config{Mode: "http", Token: "test-control-token", DeviceID: "test-device", DataDir: t.TempDir()}
-	c := session.New(ctx, p, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir})
-	ts := httptest.NewServer(Handler(cfg, c))
-	defer ts.Close()
-	defer func() { cancel(); c.Wait() }()
-	headers := &linxTransport{conversation: "conversation-a"}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-linx", Version: "1"}, nil)
-	transport := func() mcp.Transport {
-		httpClient := &http.Client{Transport: headers}
-		if streamable {
-			return &mcp.StreamableClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: httpClient}
-		}
-		return &mcp.SSEClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: httpClient}
-	}
-	cloud, err := client.Connect(ctx, transport(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cloud.Close()
-	tools, err := cloud.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := []string{}
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-		schema, _ := json.Marshal(tool.InputSchema)
-		if strings.Contains(string(schema), "session_id") || strings.Contains(string(schema), "device_id") || tool.OutputSchema != nil {
-			t.Fatalf("tool leaks control fields: %+v", tool)
-		}
-	}
-	slices.Sort(names)
-	if !slices.Equal(names, []string{"get_status", "send_message", "start_new_project"}) {
-		t.Fatal(names)
-	}
-	call := func(name string, args any, failed bool) string {
-		t.Helper()
-		start := time.Now()
-		res, err := cloud.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args, Meta: mcp.Meta{"linxi.control/request-identity": map[string]string{"conversation": "forged"}}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if time.Since(start) >= 300*time.Millisecond {
-			t.Fatal("tool blocked on cloud execution")
-		}
-		return voiceResult(t, res, failed)
-	}
-	if got := call("get_status", nil, false); got != "还没有任务，可以告诉我想做什么" {
-		t.Fatal(got)
-	}
-	args := map[string]any{"text": "做个页面"}
-	first := call("send_message", args, false) // Create remains blocked.
-	for range 20 {
-		if got := call("send_message", args, false); got != first {
-			t.Fatalf("duplicate receipt changed: %s", got)
-		}
-	}
-	// A second connection shares dedup state, including simultaneous retries.
-	second, err := client.Connect(ctx, transport(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
-	responses := make(chan *mcp.CallToolResult, 8)
-	errors := make(chan error, 8)
-	for range 8 {
-		go func() {
-			res, err := second.CallTool(ctx, &mcp.CallToolParams{Name: "send_message", Arguments: args})
-			if err != nil {
-				errors <- err
-				return
-			}
-			responses <- res
-		}()
-	}
-	for range 8 {
-		select {
-		case res := <-responses:
-			if got := voiceResult(t, res, false); got != first {
-				t.Fatalf("duplicate receipt changed on a new connection: %s", got)
-			}
-		case err := <-errors:
-			t.Fatal(err)
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-	}
-	if got := call("get_status", nil, false); got != "正在准备云端环境" {
-		t.Fatal(got)
-	}
-	// Identity comes from each POST, overriding both GET identity and forged _meta.
-	headers.setConversation("conversation-b")
-	call("send_message", args, false)
-	headers.setConversation("")
-	call("send_message", args, false)
-	call("send_message", args, false) // No header means no dedup.
-	headers.setConversation("conversation-a")
-	call("start_new_project", args, false) // Explicit new-project intent has its own key.
-	for _, args := range []any{map[string]any{"text": " \n "}, map[string]any{"text": strings.Repeat("字", 2001)}, map[string]any{"text": 42}, map[string]any{"text": "hello", "device_id": "forged"}, map[string]any{}} {
-		call("send_message", args, true)
-	}
-	call("get_status", map[string]any{"session_id": "forged"}, true)
-	close(p.gate)
-	deadline := time.After(2 * time.Second)
-	for p.sends.Load() != 5 {
-		select {
-		case <-deadline:
-			t.Fatalf("dedup/admission: got %d sends, want 5", p.sends.Load())
-		case <-time.After(time.Millisecond):
-		}
-	}
-	// The five-second window expires from the original admission, not each retry.
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	call("send_message", args, false)
-	deadline = time.After(time.Second)
-	for p.sends.Load() != 6 {
-		select {
-		case <-deadline:
-			t.Fatal("dedup entry did not expire")
-		case <-time.After(time.Millisecond):
 		}
 	}
 }

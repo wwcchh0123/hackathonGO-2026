@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,21 +16,24 @@ import (
 )
 
 type mockSession struct {
+	info           Session
 	status, prompt string
 	cancel         context.CancelFunc
 	done           chan struct{}
 	ready          bool
 }
 type Mock struct {
-	mu       sync.Mutex
-	sessions map[string]*mockSession
-	hub      *events.Hub
-	ctx      context.Context
-	Step     time.Duration
+	mu         sync.Mutex
+	sessions   map[string]*mockSession
+	hub        *events.Hub
+	ctx        context.Context
+	Step       time.Duration
+	sequenceMu sync.Mutex
+	sequences  map[string]int64
 }
 
 func NewMock(ctx context.Context) *Mock {
-	return &Mock{sessions: map[string]*mockSession{}, hub: events.NewHub(), ctx: ctx, Step: 900 * time.Millisecond}
+	return &Mock{sessions: map[string]*mockSession{}, hub: events.NewHub(), ctx: ctx, Step: 900 * time.Millisecond, sequences: map[string]int64{}}
 }
 func ID() string {
 	b := make([]byte, 16)
@@ -39,26 +43,39 @@ func ID() string {
 	return hex.EncodeToString(b)
 }
 func (m *Mock) emit(id, kind string, extra map[string]any) string {
+	m.sequenceMu.Lock()
+	defer m.sequenceMu.Unlock()
 	if extra == nil {
 		extra = map[string]any{}
 	}
 	extra["id"] = "evt_" + ID()
 	extra["type"] = kind
 	extra["created_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	m.sequences[id]++
+	extra["sequence_number"] = m.sequences[id]
 	b, _ := json.Marshal(extra)
 	m.hub.Append(id, events.Frame{ID: extra["id"].(string), Type: kind, Data: b})
 	return extra["id"].(string)
 }
-func (m *Mock) Create(ctx context.Context) (Session, error) {
+func (m *Mock) Create(ctx context.Context, input ...NewSession) (Session, error) {
 	if err := ctx.Err(); err != nil {
 		return Session{}, err
 	}
 	id := "ses_mock_" + ID()
 	m.mu.Lock()
-	m.sessions[id] = &mockSession{status: "idle"}
+	if len(m.sessions) >= 256 {
+		m.mu.Unlock()
+		return Session{}, fmt.Errorf("mock session limit reached")
+	}
+	info := Session{ID: id, Status: "idle", Runtime: "claudecode", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if len(input) > 0 {
+		info.Title = input[0].Title
+		info.Metadata = input[0].Metadata
+	}
+	m.sessions[id] = &mockSession{status: "idle", info: info}
 	m.mu.Unlock()
 	m.emit(id, "session.created", nil)
-	return Session{ID: id, Status: "idle"}, nil
+	return info, nil
 }
 func (m *Mock) Status(ctx context.Context, id string) (Session, error) {
 	if err := ctx.Err(); err != nil {
@@ -68,9 +85,11 @@ func (m *Mock) Status(ctx context.Context, id string) (Session, error) {
 	defer m.mu.Unlock()
 	s := m.sessions[id]
 	if s == nil {
-		return Session{}, fmt.Errorf("unknown session")
+		return Session{}, &Error{Operation: "GET session", StatusCode: 404}
 	}
-	return Session{ID: id, Status: s.status}, nil
+	info := s.info
+	info.Status = s.status
+	return info, nil
 }
 func (m *Mock) SendMessage(ctx context.Context, id string, message Message) (AcceptedInput, error) {
 	prompt := message.Text
@@ -91,6 +110,7 @@ func (m *Mock) SendMessage(ctx context.Context, id string, message Message) (Acc
 	s.cancel = cancel
 	s.done = make(chan struct{})
 	s.status = "running"
+	s.info.UpdatedAt = time.Now().UTC()
 	s.prompt = prompt
 	s.ready = false
 	done := s.done
@@ -135,6 +155,127 @@ func (m *Mock) SendMessage(ctx context.Context, id string, message Message) (Acc
 		m.mu.Unlock()
 	}()
 	return AcceptedInput{EventID: eventID}, nil
+}
+
+func (m *Mock) ListSessions(ctx context.Context, q SessionQuery) (SessionPage, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionPage{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	all := []Session{}
+	for _, item := range m.sessions {
+		s := item.info
+		s.Status = item.status
+		if q.Status != "" && q.Status != s.Status {
+			continue
+		}
+		if !q.IncludeArchived && s.ArchivedAt != nil {
+			continue
+		}
+		if q.CreatedAfter != "" {
+			t, _ := time.Parse(time.RFC3339Nano, q.CreatedAfter)
+			if s.CreatedAt.Before(t) {
+				continue
+			}
+		}
+		if q.CreatedBefore != "" {
+			t, _ := time.Parse(time.RFC3339Nano, q.CreatedBefore)
+			if s.CreatedAt.After(t) {
+				continue
+			}
+		}
+		all = append(all, s)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].ID > all[j].ID
+		}
+		return all[i].CreatedAt.After(all[j].CreatedAt)
+	})
+	start := 0
+	if q.Page != "" {
+		start = -1
+		for i, s := range all {
+			if s.ID == q.Page {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return SessionPage{}, fmt.Errorf("invalid page")
+		}
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	end := min(len(all), start+limit)
+	out := SessionPage{Data: all[start:end]}
+	if end < len(all) {
+		out.NextPage = all[end-1].ID
+	}
+	return out, nil
+}
+func (m *Mock) ListEvents(ctx context.Context, id string, q EventQuery) (EventPage, error) {
+	if _, err := m.Status(ctx, id); err != nil {
+		return EventPage{}, err
+	}
+	all := []events.Frame{}
+	for _, f := range m.hub.Frames(id) {
+		if len(q.Types) == 0 {
+			all = append(all, f)
+		} else {
+			for _, kind := range q.Types {
+				if kind == f.Type {
+					all = append(all, f)
+					break
+				}
+			}
+		}
+	}
+	if q.Order == "desc" {
+		for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+			all[i], all[j] = all[j], all[i]
+		}
+	}
+	start := 0
+	if q.Page != "" {
+		start = -1
+		for i, f := range all {
+			if f.ID == q.Page {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return EventPage{Data: []events.Frame{}}, nil
+		}
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	end := min(len(all), start+limit)
+	out := EventPage{Data: all[start:end]}
+	if end < len(all) {
+		out.NextPage = all[end-1].ID
+	}
+	return out, nil
+}
+func (m *Mock) ListFiles(ctx context.Context, id string, limit int, page string) (FilePage, error) {
+	files, err := m.Artifacts(ctx, id)
+	if err != nil {
+		return FilePage{}, err
+	}
+	out := FilePage{Data: []FileInfo{}}
+	if page != "" {
+		return out, nil
+	}
+	for _, f := range files {
+		out.Data = append(out.Data, FileInfo{ID: "mock_" + id + "_" + f.Path, Path: f.Path, Size: int64(len(f.Data))})
+	}
+	return out, nil
 }
 func (m *Mock) Send(ctx context.Context, id, prompt string) error {
 	_, err := m.SendMessage(ctx, id, Message{Text: prompt})

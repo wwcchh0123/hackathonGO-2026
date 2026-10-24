@@ -5,11 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,96 +16,103 @@ import (
 )
 
 const identityMeta = "linxi.control/request-identity"
-const dedupWindow = 5 * time.Second
 
 type identity struct{ device, conversation, agent string }
-type dedupKey struct{ conversation, tool, text string }
-type cached struct {
-	receipt session.Receipt
-	expires time.Time
-}
 
 func textResult(text string, failed bool) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}, IsError: failed}
 }
-
-func Handler(c *session.Controller) http.Handler {
-	// KeepAlive stays disabled: Linx may not answer server-initiated MCP pings.
-	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.2.1"}, nil)
-	var mu sync.Mutex
-	recent := make(map[dedupKey]cached)
-	submit := func(who identity, tool, text string) (session.Receipt, error, bool) {
-		// Serialize only cache lookup and nonblocking queue admission, never cloud work.
-		mu.Lock()
-		defer mu.Unlock()
-		now := time.Now()
-		for k, v := range recent {
-			if !now.Before(v.expires) {
-				delete(recent, k)
-			}
-		}
-		key := dedupKey{who.conversation, tool, strings.TrimSpace(text)}
-		if who.conversation != "" {
-			if previous, ok := recent[key]; ok {
-				return previous.receipt, nil, true
-			}
-		}
-		action := "message"
-		if tool == "start_new_project" {
-			action = "start"
-		}
-		receipt, err := c.Submit(session.Command{Action: action, Prompt: text, Source: "mcp", ConversationID: who.conversation})
-		if err == nil && who.conversation != "" {
-			recent[key] = cached{receipt, now.Add(dedupWindow)}
-		}
-		return receipt, err, false
+func decodeArgs(raw json.RawMessage, target any) error {
+	if len(raw) == 0 {
+		raw = []byte("{}")
 	}
-	messageSchema := map[string]any{
-		"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string", "minLength": 1, "maxLength": 2000, "description": "用户对编程搭档说的原话"}},
-		"required": []string{"text"}, "additionalProperties": false,
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return io.ErrUnexpectedEOF
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if err := d.Decode(target); err != nil {
+		return err
+	}
+	if d.Decode(new(any)) != io.EOF {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func Handler(c *session.Controller) http.Handler {
+	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.3.0"}, nil)
+	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}
+	ref := map[string]any{"type": "string", "minLength": 1, "maxLength": 100}
+	str := map[string]any{"type": "string", "maxLength": 512}
+	schemas := map[string]map[string]any{
+		"new_task":     {"text": text, "parent_task_ref": ref},
+		"send_message": {"text": text, "task_ref": ref},
+		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": str, "agent_id": str, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
+		"get_task":     {"task_ref": ref, "command_id": str, "events_limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "events_page": str, "files_page": str},
 	}
 	descriptions := map[string]string{
-		"send_message":      "默认入口。把用户对当前作品的需求、修改、继续、暂停原话转交；控制服务自行决定新建、复用或打断会话。",
-		"start_new_project": "仅当用户明确要做一个与当前作品无关的新东西时使用；不确定时使用 send_message。",
-		"get_status":        "查询进度、好了没或看看效果；只读当前状态，用一句中文如实转述。",
+		"new_task":     "明确新建独立任务；不停止其他任务。返回 task_ref 和 command_id，accepted 仅表示已入队。接力历史任务时明确传 parent_task_ref。",
+		"send_message": "向明确的 task_ref 原话发送需求、修改、继续或暂停。省略引用仅复用同一灵矽对话最近一次写入目标；查询不改变目标。返回异步回执，请用 get_task 核对 command_id。",
+		"list_tasks":   "只读查询当前 AgentAPI 身份可见任务。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
+		"get_task":     "只读任务详情，包含云端状态、命令结果、消息时间、停止原因、事件和文件元信息。events_limit=0 只查状态和消息，不建事件流、不切屏、不下载预览。旧摘要不是本轮完成证明。",
 	}
-	for _, name := range []string{"send_message", "start_new_project", "get_status"} {
-		schema := messageSchema
-		if name == "get_status" {
-			schema = map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
+	for _, name := range []string{"list_tasks", "get_task", "send_message", "new_task"} {
+		required := []string{}
+		if name == "get_task" {
+			required = []string{"task_ref"}
 		}
-		s.AddTool(&mcp.Tool{Name: name, Description: descriptions[name], InputSchema: schema}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if name == "new_task" || name == "send_message" {
+			required = []string{"text"}
+		}
+		s.AddTool(&mcp.Tool{Name: name, Description: descriptions[name], InputSchema: map[string]any{"type": "object", "properties": schemas[name], "required": required, "additionalProperties": false}}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			started := time.Now()
 			who := requestIdentity(r)
-			duplicate := false
-			result := textResult("工具参数不正确，请重新描述需求", true)
-			defer func() {
-				slog.Info("MCP tool call", "tool", name, "device_id", who.device, "linx_session_id", who.conversation, "linx_agent_id", who.agent, "duplicate", duplicate, "is_error", result.IsError, "duration_ms", time.Since(started).Milliseconds())
-			}()
-			var in struct {
-				Text string `json:"text"`
-			}
-			arguments := r.Params.Arguments
-			if len(arguments) == 0 {
-				arguments = []byte("{}")
-			}
-			decoder := json.NewDecoder(bytes.NewReader(arguments))
-			decoder.DisallowUnknownFields()
-			if name == "get_status" {
-				var empty struct{}
-				if decoder.Decode(&empty) == nil && string(arguments) != "null" {
-					result = textResult(c.StatusText(), false)
+			var value any
+			var err error
+			switch name {
+			case "list_tasks":
+				var in session.ListOptions
+				err = decodeArgs(r.Params.Arguments, &in)
+				if err == nil {
+					value, err = c.ListTasks(ctx, in)
 				}
-			} else if decoder.Decode(&in) == nil {
-				receipt, err, repeated := submit(who, name, in.Text)
-				duplicate = repeated
-				if err != nil {
-					result = textResult(err.Error(), true)
-				} else {
-					result = textResult(receipt.Message, false)
+			case "get_task":
+				var in struct {
+					TaskRef string `json:"task_ref"`
+					session.DetailOptions
+				}
+				err = decodeArgs(r.Params.Arguments, &in)
+				if err == nil {
+					value, err = c.GetTask(ctx, in.TaskRef, in.DetailOptions)
+				}
+			default:
+				var in struct {
+					Text      string `json:"text"`
+					TaskRef   string `json:"task_ref,omitempty"`
+					ParentRef string `json:"parent_task_ref,omitempty"`
+				}
+				err = decodeArgs(r.Params.Arguments, &in)
+				if err == nil {
+					if (name == "send_message" && in.ParentRef != "") || (name == "new_task" && in.TaskRef != "") {
+						err = fmt.Errorf("工具参数不正确")
+					} else {
+						action := "message"
+						if name == "new_task" {
+							action = "start"
+						}
+						value, err = c.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Source: "mcp", ConversationID: who.conversation})
+					}
 				}
 			}
-			return result, nil
+			slog.Info("MCP tool call", "tool", name, "device_id", who.device, "linx_session_id", who.conversation, "linx_agent_id", who.agent, "is_error", err != nil, "duration_ms", time.Since(started).Milliseconds())
+			if err != nil {
+				return textResult(err.Error(), true), nil
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return textResult("无法编码工具结果", true), nil
+			}
+			return textResult(string(raw), false), nil
 		})
 	}
 	getServer := func(*http.Request) *mcp.Server { return s }

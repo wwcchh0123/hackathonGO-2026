@@ -37,6 +37,28 @@ let reconnect = null;
 let stopped = false;
 let connected = false;
 let streamConnected = false;
+let nextPage = '';
+const tasks = new Map();
+async function loadTasks(more = false) {
+  const page = await request(`/api/tasks?limit=50${more && nextPage ? '&page=' + encodeURIComponent(nextPage) : ''}`);
+  if (!more) tasks.clear();
+  for (const task of page.data) tasks.set(task.task_ref, task);
+  while (tasks.size > 256) tasks.delete(tasks.keys().next().value);
+  for (const id of ['view-task', 'command-task']) {
+    const select = $(id), selected = id === 'view-task' ? (snapshot?.task_ref || select.value) : select.value;
+    select.replaceChildren(new Option('请选择任务', ''));
+    for (const task of tasks.values()) select.add(new Option(`${task.title || '未命名任务'} · ${task.status}`, task.task_ref));
+    select.value = selected;
+  }
+  nextPage = page.next_page || '';
+  $('more-tasks').hidden = !page.has_more;
+}
+$('refresh-tasks').onclick = () => loadTasks().catch((e) => { $('receipt').textContent = e.message; });
+$('more-tasks').onclick = () => loadTasks(true).catch((e) => { $('receipt').textContent = e.message; });
+$('view-task').onchange = async () => {
+  try { snapshot = await request('/api/device/view', { task_ref: $('view-task').value }); subscribe(snapshot.task_ref); render(); }
+  catch (error) { $('receipt').textContent = error.message; }
+};
 
 async function request(path, body) {
   const response = await fetch(
@@ -137,18 +159,18 @@ function render() {
     $('result-frame').removeAttribute('src');
     $('result-link').removeAttribute('href');
   }
-  $('show-preview').disabled = !snapshot.result_url;
+  $('show-preview').disabled = !snapshot.task_ref || (snapshot.status !== 'idle' && !snapshot.result_url);
   renderEvents();
 }
-function subscribe(sessionID) {
+function subscribe(taskRef) {
   source?.close();
   source = null;
   events = [];
   seen = new Set();
   streamConnected = false;
-  if (!sessionID) return;
+  if (!taskRef) return;
   source = new EventSource(
-    `/api/sessions/${encodeURIComponent(sessionID)}/events`,
+    `/api/tasks/${encodeURIComponent(taskRef)}/events`,
   );
   source.onopen = () => {
     streamConnected = true;
@@ -157,7 +179,9 @@ function subscribe(sessionID) {
   source.onerror = () => {
     streamConnected = false;
     renderEvents();
+    if (source?.readyState === EventSource.CLOSED) setTimeout(() => { if (!stopped && snapshot?.task_ref === taskRef) subscribe(taskRef); }, 1500);
   };
+  source.addEventListener('stream_error', () => { if (!stopped && snapshot?.task_ref === taskRef) subscribe(taskRef); });
   source.addEventListener('agent_event', (message) => {
     try {
       const event = JSON.parse(message.data);
@@ -165,6 +189,7 @@ function subscribe(sessionID) {
         return;
       if (event.id) seen.add(event.id);
       events.push(event);
+      while (events.length > 512) { const old = events.shift(); if (old.id) seen.delete(old.id); }
       renderEvents();
     } catch (error) {
       console.error('Invalid provider event', error);
@@ -183,13 +208,13 @@ function connectChannel() {
     try {
       const next = JSON.parse(message.data);
       if (!next.device_id || typeof next.revision !== 'number') return;
-      const previousID = snapshot?.session_id;
-      if (next.session_id !== previousID || (snapshot?.result_url && !next.result_url))
+      const previousID = snapshot?.task_ref;
+      if (next.task_ref !== previousID || (snapshot?.result_url && !next.result_url))
         currentView = 'timeline';
       if (next.result_url && next.result_url !== snapshot?.result_url)
         currentView = 'preview';
       snapshot = next;
-      if (next.session_id !== previousID) subscribe(next.session_id);
+      if (next.task_ref !== previousID) subscribe(next.task_ref);
       render();
     } catch (error) {
       console.error('Invalid device snapshot', error);
@@ -214,6 +239,7 @@ async function boot() {
     $('sim-link').hidden = simulator || !config.dev_tools;
     $('layout').classList.toggle('with-simulator', simulator);
     connectChannel();
+    await loadTasks();
   } catch (error) {
     $('login').hidden = false;
     $('login-error').textContent = error.message;
@@ -231,6 +257,10 @@ $('connect').onsubmit = async (event) => {
 document.querySelectorAll('[data-action],[data-view]').forEach((button) => {
   button.onclick = async () => {
     if (button.dataset.view) {
+      if (button.dataset.view === 'preview' && snapshot?.task_ref && !snapshot.result_url) {
+        try { const result = await request(`/api/tasks/${encodeURIComponent(snapshot.task_ref)}/preview`, {}); snapshot.result_url = result.result_url; }
+        catch (error) { $('receipt').textContent = error.message; return; }
+      }
       currentView = button.dataset.view;
       render();
       return;
@@ -238,12 +268,17 @@ document.querySelectorAll('[data-action],[data-view]').forEach((button) => {
     const command = {
       action: button.dataset.action,
       prompt: $('instruction').value,
+      task_ref: button.dataset.action === 'message' ? $('command-task').value : undefined,
     };
     button.disabled = true;
     try {
-      $('receipt').textContent = (
-        await request('/api/commands', command)
-      ).message;
+      const receipt = await request('/api/commands', command);
+      $('receipt').textContent = receipt.message;
+      // A creation reference is usable immediately, before it appears in the cloud list.
+      for (const id of ['command-task', 'view-task']) {
+        if (![...$(id).options].some((o) => o.value === receipt.task_ref)) $(id).add(new Option('新建任务（已受理）', receipt.task_ref));
+      }
+      $('command-task').value = receipt.task_ref;
     } catch (error) {
       $('receipt').textContent = error.message;
     } finally {

@@ -20,6 +20,7 @@ import (
 type HTTP struct {
 	base, key, agent, environment string
 	version                       int
+	vaultIDs                      []string
 	client                        anthropic.Client
 }
 
@@ -40,6 +41,7 @@ func NewHTTP(base, key, agent, environment string) *HTTP {
 
 // WithVersion pins an existing agent snapshot; zero selects its current version.
 func (p *HTTP) WithVersion(version int) *HTTP { p.version = version; return p }
+func (p *HTTP) WithVaults(ids []string) *HTTP { p.vaultIDs = append([]string(nil), ids...); return p }
 
 // Validate checks configured resources without creating or mutating them.
 // The calls use the version of anthropic-sdk-go recommended by AgentAPI.
@@ -67,10 +69,15 @@ func (p *HTTP) Validate(ctx context.Context) error {
 	return nil
 }
 
-func (p *HTTP) Create(ctx context.Context) (Session, error) {
+func (p *HTTP) Create(ctx context.Context, input ...NewSession) (Session, error) {
 	params := anthropic.BetaSessionNewParams{
 		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: param.NewOpt(p.agent)},
 		EnvironmentID: p.environment,
+		VaultIDs:      p.vaultIDs,
+	}
+	if len(input) > 0 {
+		params.Title = param.NewOpt(input[0].Title)
+		params.Metadata = input[0].Metadata
 	}
 	if p.version > 0 {
 		params.Agent = anthropic.BetaSessionNewParamsAgentUnion{OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
@@ -84,7 +91,7 @@ func (p *HTTP) Create(ctx context.Context) (Session, error) {
 	if res == nil || res.ID == "" {
 		return Session{}, &Error{Operation: "POST session", Ambiguous: true, Cause: fmt.Errorf("empty session id")}
 	}
-	return Session{ID: res.ID, Status: string(res.Status)}, nil
+	return decodeSession(res.RawJSON())
 }
 
 func (p *HTTP) SendMessage(ctx context.Context, id string, message Message) (AcceptedInput, error) {
@@ -139,7 +146,90 @@ func (p *HTTP) Status(ctx context.Context, id string) (Session, error) {
 	if res == nil || res.ID != id || !KnownStatus(string(res.Status)) {
 		return Session{}, fmt.Errorf("AgentAPI returned invalid session state")
 	}
-	return Session{ID: res.ID, Status: string(res.Status)}, nil
+	return decodeSession(res.RawJSON())
+}
+
+// decodeSession deliberately projects an allowlist: resources, credentials and
+// the Agent's internal system/tool configuration never reach device responses.
+func decodeSession(raw string) (Session, error) {
+	var wire struct {
+		Session
+		Metadata map[string]string `json:"metadata"`
+		Agent    struct {
+			Runtime string `json:"runtime"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
+		return Session{}, fmt.Errorf("invalid session response")
+	}
+	wire.Session.Runtime = wire.Agent.Runtime
+	wire.Session.Metadata = wire.Metadata
+	return wire.Session, nil
+}
+
+func (p *HTTP) ListSessions(ctx context.Context, q SessionQuery) (SessionPage, error) {
+	params := anthropic.BetaSessionListParams{Limit: param.NewOpt(int64(q.Limit)), IncludeArchived: param.NewOpt(q.IncludeArchived)}
+	if q.Page != "" {
+		params.Page = param.NewOpt(q.Page)
+	}
+	if q.AgentID != "" {
+		params.AgentID = param.NewOpt(q.AgentID)
+	}
+	var opts []option.RequestOption
+	// AgentAPI's public contract uses a singular status and fixed created_at desc.
+	// Do not send the SDK's CMA statuses[] or order fields.
+	if q.Status != "" {
+		opts = append(opts, option.WithQuery("status", q.Status))
+	}
+	if q.CreatedAfter != "" {
+		opts = append(opts, option.WithQuery("created_at[gte]", q.CreatedAfter))
+	}
+	if q.CreatedBefore != "" {
+		opts = append(opts, option.WithQuery("created_at[lte]", q.CreatedBefore))
+	}
+	res, err := p.client.Beta.Sessions.List(ctx, params, opts...)
+	if err != nil {
+		return SessionPage{}, sdkError("GET sessions", err)
+	}
+	out := SessionPage{Data: []Session{}, NextPage: res.NextPage}
+	for _, item := range res.Data {
+		s, err := decodeSession(item.RawJSON())
+		if err != nil {
+			return SessionPage{}, err
+		}
+		out.Data = append(out.Data, s)
+	}
+	return out, nil
+}
+func (p *HTTP) ListEvents(ctx context.Context, id string, q EventQuery) (EventPage, error) {
+	params := anthropic.BetaSessionEventListParams{Limit: param.NewOpt(int64(q.Limit)), Order: anthropic.BetaSessionEventListParamsOrder(q.Order), Types: q.Types}
+	if q.Page != "" {
+		params.Page = param.NewOpt(q.Page)
+	}
+	res, err := p.client.Beta.Sessions.Events.List(ctx, id, params)
+	if err != nil {
+		return EventPage{}, sdkError("GET events", err)
+	}
+	out := EventPage{Data: []events.Frame{}, NextPage: res.NextPage}
+	for _, e := range res.Data {
+		out.Data = append(out.Data, events.Frame{ID: e.ID, Type: e.Type, Data: json.RawMessage(e.RawJSON())})
+	}
+	return out, nil
+}
+func (p *HTTP) ListFiles(ctx context.Context, id string, limit int, page string) (FilePage, error) {
+	params := anthropic.BetaFileListParams{ScopeID: param.NewOpt(id), Limit: param.NewOpt(int64(limit))}
+	if page != "" {
+		params.Page = param.NewOpt(page)
+	}
+	res, err := p.client.Beta.Files.List(ctx, params)
+	if err != nil {
+		return FilePage{}, sdkError("GET files", err)
+	}
+	out := FilePage{Data: []FileInfo{}, NextPage: res.NextPage}
+	for _, f := range res.Data {
+		out.Data = append(out.Data, FileInfo{ID: f.ID, Path: f.Filename, Size: f.SizeBytes, CreatedAt: f.CreatedAt})
+	}
+	return out, nil
 }
 func (p *HTTP) Stream(ctx context.Context, id string, emit func(events.Frame) error) error {
 	stream := p.client.Beta.Sessions.Events.StreamEvents(ctx, id, anthropic.BetaSessionEventStreamParams{})
@@ -163,7 +253,12 @@ func (p *HTTP) Artifacts(ctx context.Context, id string) ([]File, error) {
 		CreatedAt    time.Time
 	}
 	latest := make(map[string]reference)
+	count := 0
 	for pager.Next() {
+		count++
+		if count > 500 {
+			return nil, fmt.Errorf("preview file history exceeds 500 exports; narrow the outputs")
+		}
 		f := pager.Current()
 		previous, exists := latest[f.Filename]
 		if !exists || f.CreatedAt.After(previous.CreatedAt) {
@@ -215,6 +310,9 @@ func sdkError(operation string, err error) error {
 	wrapped := &Error{Operation: operation, Cause: err, Ambiguous: strings.HasPrefix(operation, "POST")}
 	if match := statusCodePattern.FindStringSubmatch(err.Error()); len(match) == 2 {
 		fmt.Sscanf(match[1], "%d", &wrapped.StatusCode)
+	}
+	if wrapped.StatusCode >= 400 && wrapped.StatusCode < 500 && wrapped.StatusCode != 408 {
+		wrapped.Ambiguous = false
 	}
 	return wrapped
 }

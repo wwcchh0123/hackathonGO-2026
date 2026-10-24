@@ -8,14 +8,21 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 )
 
-type Store struct{ Root, PublicURL string }
+type Store struct {
+	Root, PublicURL string
+	mu              sync.Mutex
+}
 
 func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(files) == 0 {
 		return "", nil
 	}
@@ -53,8 +60,45 @@ func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, err
 		return "", fmt.Errorf("no HTML entry in exported artifacts")
 	}
 	complete = true
+	entries, _ := os.ReadDir(s.Root)
+	// Only completed publications use 32-hex names. Keep the latest 32, bounding
+	// disk usage across historical tasks and repeated explicit preview requests.
+	type publication struct {
+		name string
+		time int64
+	}
+	var ready []publication
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) == 32 && strings.Trim(e.Name(), "0123456789abcdef") == "" && e.Name() != token {
+			if info, err := e.Info(); err == nil {
+				ready = append(ready, publication{e.Name(), info.ModTime().UnixNano()})
+			}
+		}
+	}
+	sort.Slice(ready, func(i, j int) bool { return ready[i].time > ready[j].time })
+	for i := 31; i < len(ready); i++ {
+		_ = os.RemoveAll(filepath.Join(s.Root, ready[i].name))
+	}
 	resultPath := (&url.URL{Path: "/results/" + token + "/" + entry}).EscapedPath()
 	return strings.TrimRight(s.PublicURL, "/") + resultPath, nil
+}
+
+// Available lets an evicted local preview fall back to an explicit fresh fetch.
+func (s *Store) Available(result string) bool {
+	u, err := url.Parse(result)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/results/"), "/")
+	if !strings.HasPrefix(u.Path, "/results/") || len(parts) < 2 || len(parts[0]) != 32 || strings.Trim(parts[0], "0123456789abcdef") != "" {
+		return false
+	}
+	p := path.Clean(strings.Join(parts[1:], "/"))
+	if p == "." || strings.HasPrefix(p, "../") || path.IsAbs(p) {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(s.Root, parts[0], filepath.FromSlash(p)))
+	return err == nil && !info.IsDir()
 }
 
 // Discard removes a completed publication that lost its session/turn race.

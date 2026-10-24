@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>灵矽 · 控制服务联调</title>
+    <link rel="icon" href="/dev-assets/favicon.svg" />
+    <link rel="stylesheet" href="/dev-assets/style.css" />
+    <script src="/dev-assets/app.js" defer></script>
+  </head>
+  <body>
+    <section class="login" id="login" hidden>
+      <span class="orbit">✳</span>
+      <h1>连接控制服务</h1>
+      <p id="login-error"></p>
+      <form id="connect">
+        <input
+          id="token"
+          type="password"
+          autocomplete="current-password"
+          aria-label="控制服务访问令牌"
+          placeholder="控制服务访问令牌"
+        /><button>连接</button>
+      </form>
+    </section>
+    <div class="app" id="app" hidden>
+      <header>
+        <a class="brand" href="/device"
+          ><span>✳</span>灵矽 <small>CONTROL LAB</small></a
+        >
+        <div class="connection">
+          <i id="connection-dot"></i><span id="connection">正在连接</span
+          ><b id="mode"></b>
+        </div>
+      </header>
+      <div class="layout" id="layout">
+        <main>
+          <section class="hero">
+            <div>
+              <span class="eyebrow">控制服务联调 · 模拟设备展示</span>
+              <h1 id="prompt">你的下一件作品，<br />从这里开始。</h1>
+              <p id="summary">正在连接…</p>
+            </div>
+            <div class="status" id="status">
+              <span class="pulse"></span><span id="status-text">准备就绪</span>
+            </div>
+          </section>
+          <div class="error" id="error" role="alert" hidden></div>
+          <section class="workspace">
+            <div class="workspace-heading">
+              <h2 id="view-name">执行时间线</h2>
+              <span id="count">等待任务</span>
+            </div>
+            <div id="events" class="events"></div>
+            <div class="preview" id="preview" hidden>
+              <div class="preview-bar">
+                <span>RESULT / WEB PREVIEW</span
+                ><a id="result-link" target="_blank" rel="noreferrer"
+                  >在新窗口打开 ↗</a
+                >
+              </div>
+              <iframe
+                id="result-frame"
+                title="任务结果预览"
+                sandbox="allow-scripts"
+              ></iframe>
+            </div>
+          </section>
+          <footer>
+            <span id="session"></span
+            ><span>此页面仅供联调，不代表硬件端技术选型</span
+            ><a href="/simulator" id="sim-link">模拟控制台 ↗</a>
+          </footer>
+        </main>
+        <section class="simulator" id="simulator" hidden>
+          <div>
+            <span class="eyebrow">开发联调</span>
+            <h2>模拟控制台</h2>
+            <p>文字模拟灵矽云端工具。语音与投屏交由后续硬件实现。</p>
+          </div>
+          <label for="instruction">任务 / 修改需求</label
+          ><textarea id="instruction" maxlength="16000">
+帮我做一个番茄钟网页</textarea>
+          <div class="buttons">
+            <button data-action="start">开始任务</button
+            ><button data-action="interrupt">暂停</button
+            ><button data-action="modify">修改需求</button
+            ><button data-action="continue">继续</button>
+          </div>
+          <div class="buttons views">
+            <button data-view="timeline">看过程</button
+            ><button data-view="code">看代码</button
+            ><button data-view="terminal">看终端</button
+            ><button data-view="preview" id="show-preview" disabled>
+              看效果
+            </button>
+          </div>
+          <output id="receipt" aria-live="polite"
+            >操作会快速受理，实际执行结果在左侧显示。</output
+          ><a href="/device" target="_blank" rel="noreferrer"
+            >打开模拟设备页 ↗</a
+          >
+        </section>
+      </div>
+    </div>
+  </body>
+</html>

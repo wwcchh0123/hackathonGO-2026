@@ -36,8 +36,8 @@ flowchart LR
 
 1. 云 MCP 工具快速返回受理结果，耗时操作在工作队列执行；受理成功不代表云端任务已完成。
 2. 新任务先停止旧任务，再创建新会话、绑定设备、启动事件观察并提交输入。历史持久化由 AgentAPI 负责。
-3. 修改需求：发送 interrupt，轮询 **Provider 当前状态** 直到 idle，再在原会话发送消息；不能仅凭 interrupt HTTP 200 或回放的旧 idle 放行。
-4. 继续：只向 idle 会话发“继续”，运行中请求会返回异步错误，避免堵住后续暂停。
+3. send_message 为默认入口：执行时读取 **Provider 当前状态**。idle 直接复用；running 先 interrupt 再轮询直到 idle；无会话 / terminated / 创建失败时新建。不能仅凭 interrupt HTTP 200 或回放的旧 idle 放行。
+4. 继续 / 暂停也按原话转交 send_message。创建中的 message / start 均排队；明确换项目由 start_new_project 对应 start action。云端不保留 show / continue / interrupt action 或快照 view 字段。
 5. 每个会话一个上游观察器。断线重连后重新回放，按原始事件 ID 去重；不会因为遇到 idle 关闭流。
 6. idle 的 end_turn 触发静态产物发布；interrupted、requires_action、retries_exhausted、budget_reached 分别生成对应摘要，不声称任务完成。代际检查防止已经开始下载的旧预览覆盖后续轮次。
 7. 新任务取消旧观察器，清空当前结果。设备看到 session id 改变后重建 SSE 订阅。
@@ -50,7 +50,7 @@ flowchart LR
 | --- | --- | --- |
 | 控制服务与云 MCP | 可运行，官方 SDK 协议测试覆盖 | 灵矽真实云端鉴权与工具选择联调 |
 | AgentAPI | Mock 可演示，真实 HTTP 合约有本地假上游测试 | 使用实际 claudecode agent/environment 做云端联调 |
-| 设备展示 | 服务端 WebSocket、SSE 与视图/结果地址下发；原生 HTML/JS 联调模拟器 | 由硬件团队选择渲染技术，按协议实现，无需对齐 deck-proto |
+| 设备展示 | 服务端 WebSocket、SSE 与状态/结果地址下发，设备自主切视图；原生 HTML/JS 联调模拟器 | 由硬件团队选择渲染技术，按协议实现，无需对齐 deck-proto |
 | 进度摘要 | 确定性规则，不调用额外模型 | 按真实事件丰富摘要，必要时增加模型适配 |
 | Web 产物 | 下载 Files API 文件并发布静态网站 | 真实产物目录约定、资源路径与版本联调 |
 | 语音 | 核实灵矽 WebSocket 握手、hello 与音频协议，记录接入边界 | 硬件实现麦克风采集、TTS 与播报打断 |

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/artifacts"
@@ -18,12 +19,11 @@ import (
 	"github.com/wwcchh0123/hackathonGO-2026/internal/progress"
 )
 
-var ErrQueueFull = errors.New("指令队列已满，请稍后重试")
+var ErrQueueFull = errors.New("操作太频繁，请稍后再试")
 
 type Command struct {
-	Action string      `json:"action"`
-	Prompt string      `json:"prompt,omitempty"`
-	View   device.View `json:"view,omitempty"`
+	Action string `json:"action"`
+	Prompt string `json:"prompt,omitempty"`
 }
 type Receipt struct {
 	Accepted bool   `json:"accepted"`
@@ -40,7 +40,7 @@ type Controller struct {
 	streamCancel context.CancelFunc // only the command worker writes this
 	epoch        atomic.Uint64
 	submitMu     sync.Mutex
-	starting     bool
+	pending      int // queued and executing commands; guarded by submitMu
 }
 
 func New(ctx context.Context, p agentapi.Provider, state *device.State, store *artifacts.Store) *Controller {
@@ -52,44 +52,42 @@ func New(ctx context.Context, p agentapi.Provider, state *device.State, store *a
 func (c *Controller) Wait() { c.wg.Wait() }
 func (c *Controller) Submit(cmd Command) (Receipt, error) {
 	cmd.Prompt = strings.TrimSpace(cmd.Prompt)
-	switch cmd.Action {
-	case "start":
-		if cmd.Prompt == "" {
-			return Receipt{}, errors.New("请描述要做的任务")
-		}
-	case "interrupt", "continue":
-	case "show":
-		if !cmd.View.Valid() {
-			return Receipt{}, errors.New("未知视图")
-		}
-	default:
+	if cmd.Action != "start" && cmd.Action != "message" {
 		return Receipt{}, errors.New("未知指令")
 	}
-	if len(cmd.Prompt) > 16000 {
-		return Receipt{}, errors.New("需求过长")
+	if cmd.Prompt == "" {
+		return Receipt{}, errors.New("请说一下具体要做什么")
+	}
+	if utf8.RuneCountInString(cmd.Prompt) > 2000 {
+		return Receipt{}, errors.New("需求太长，请控制在两千字以内")
 	}
 	c.submitMu.Lock()
 	defer c.submitMu.Unlock()
-	if cmd.Action == "start" && c.starting {
-		return Receipt{}, errors.New("正在创建会话，请稍候")
-	}
-	if cmd.Action != "start" && cmd.Action != "show" && c.State.Get().SessionID == "" && !c.starting {
-		return Receipt{}, errors.New("请先开始一个任务")
-	}
 	if c.ctx.Err() != nil {
-		return Receipt{}, errors.New("服务正在关闭")
+		return Receipt{}, errors.New("服务正在关闭，请稍后再试")
+	}
+	snapshot := c.State.Get()
+	message := "好的，已转达"
+	switch {
+	case cmd.Action == "start":
+		message = "好的，开个新项目。云端准备环境约需半分钟"
+	case c.pending > 0 || snapshot.Status == "creating" || snapshot.Status == "sending" || snapshot.Status == "running":
+		message = "好的，先停下当前的再按你说的做"
+	case snapshot.SessionID == "" || snapshot.Status == "terminated":
+		message = "好的，开始做。云端准备环境约需半分钟"
 	}
 	select {
 	case c.queue <- cmd:
-		if cmd.Action == "start" {
-			c.starting = true
-		}
+		c.pending++
 	default:
 		return Receipt{}, ErrQueueFull
 	}
-	message := map[string]string{"start": "好的，开始做", "interrupt": "好的，正在调整", "continue": "好的，继续", "show": "好的，切换画面"}[cmd.Action]
 	return Receipt{Accepted: true, Message: message}, nil
 }
+
+// StatusText reads only the device snapshot; it never waits on the provider.
+func (c *Controller) StatusText() string { return progress.SpokenStatus(c.State.Get()) }
+
 func (c *Controller) work() {
 	defer c.wg.Done()
 	defer func() {
@@ -105,126 +103,89 @@ func (c *Controller) work() {
 			ctx, cancel := context.WithTimeout(c.ctx, 60*time.Second)
 			err := c.execute(ctx, cmd)
 			cancel()
-			if cmd.Action == "start" {
-				c.submitMu.Lock()
-				c.starting = false
-				c.submitMu.Unlock()
-			}
 			if err != nil && c.ctx.Err() == nil {
 				slog.Error("command failed", "action", cmd.Action, "error", err)
 				c.State.Update(func(s *device.Snapshot) {
 					s.Error = err.Error()
 					s.Summary = "操作未完成：" + err.Error()
-					if s.Status == "creating" {
-						s.Status = "error"
-					}
+					s.Status = "error"
 				})
 			}
+			c.submitMu.Lock()
+			c.pending--
+			c.submitMu.Unlock()
 		}
 	}
 }
 
 // waitIdle reads authoritative provider state. An HTTP interrupt acknowledgement
 // or an old idle event replay is never sufficient to send the next message.
-func (c *Controller) waitIdle(ctx context.Context, id string) error {
+func (c *Controller) waitIdle(ctx context.Context, id string) (agentapi.Session, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		s, err := c.Provider.Status(ctx, id)
 		if err != nil {
-			return err
+			return agentapi.Session{}, err
 		}
-		if s.Status == "idle" {
-			return nil
-		}
-		if s.Status == "terminated" {
-			return errors.New("会话已终止，请开始新任务")
+		if s.Status == "idle" || s.Status == "terminated" {
+			return s, nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("等待 agent 停止: %w", ctx.Err())
+			return agentapi.Session{}, fmt.Errorf("等待 agent 停止: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}
 }
-func (c *Controller) stop(ctx context.Context, id string) error {
+func (c *Controller) stop(ctx context.Context, id string) (agentapi.Session, error) {
 	s, err := c.Provider.Status(ctx, id)
 	if err != nil {
-		return err
+		return agentapi.Session{}, err
 	}
 	if s.Status == "idle" || s.Status == "terminated" {
-		return nil
+		return s, nil
 	}
 	if err := c.Provider.Interrupt(ctx, id); err != nil {
-		return err
+		return agentapi.Session{}, err
 	}
 	return c.waitIdle(ctx, id)
 }
 func (c *Controller) execute(ctx context.Context, cmd Command) error {
+	// Resolve the binding and authoritative runtime state at execution time,
+	// including commands accepted while a preceding Create was still pending.
 	s := c.State.Get()
-	if cmd.Action == "show" {
-		if cmd.View == device.Preview && s.ResultURL == "" {
-			return errors.New("结果尚未生成")
-		}
-		c.State.Update(func(s *device.Snapshot) { s.View = cmd.View; s.Error = "" })
-		return nil
-	}
 	c.epoch.Add(1)
-	if cmd.Action == "start" {
-		if s.SessionID != "" {
-			if err := c.stop(ctx, s.SessionID); err != nil {
-				return err
-			}
-		}
-		if c.streamCancel != nil {
-			c.streamCancel()
-		}
-		c.State.Update(func(s *device.Snapshot) {
-			s.SessionID = ""
-			s.Status = "creating"
-			s.Summary = "正在准备云端工作空间"
-			s.Prompt = cmd.Prompt
-			s.ResultURL = ""
-			s.Error = ""
-			s.View = device.Timeline
-		})
-		created, err := c.Provider.Create(ctx)
+	if s.SessionID != "" {
+		current, err := c.stop(ctx, s.SessionID)
 		if err != nil {
 			return err
 		}
-		s.SessionID = created.ID
-		c.State.Update(func(s *device.Snapshot) { s.SessionID = created.ID; s.Status = "idle" })
-		streamCtx, cancel := context.WithCancel(c.ctx)
-		c.streamCancel = cancel
-		c.wg.Add(1)
-		go c.observe(streamCtx, created.ID)
-		return c.send(ctx, created.ID, cmd.Prompt)
-	}
-	if s.SessionID == "" {
-		return errors.New("当前没有会话，请重新开始任务")
-	}
-	if cmd.Action == "interrupt" {
-		if err := c.stop(ctx, s.SessionID); err != nil {
-			return err
+		if cmd.Action == "message" && current.Status == "idle" {
+			return c.send(ctx, s.SessionID, cmd.Prompt)
 		}
-		if cmd.Prompt == "" {
-			c.State.Update(func(s *device.Snapshot) {
-				s.Status = "idle"
-				s.Summary = "已暂停，等待你的下一步指令"
-				s.Error = ""
-			})
-			return nil
-		}
-		return c.send(ctx, s.SessionID, cmd.Prompt)
 	}
-	current, err := c.Provider.Status(ctx, s.SessionID)
+	if c.streamCancel != nil {
+		c.streamCancel()
+	}
+	c.State.Update(func(s *device.Snapshot) {
+		s.SessionID = ""
+		s.Status = "creating"
+		s.Summary = "正在准备云端环境"
+		s.Prompt = cmd.Prompt
+		s.ResultURL = ""
+		s.Error = ""
+	})
+	created, err := c.Provider.Create(ctx)
 	if err != nil {
 		return err
 	}
-	if current.Status != "idle" {
-		return errors.New("会话正在执行或已终止，请暂停后继续，或开始新任务")
-	}
-	return c.send(ctx, s.SessionID, "继续")
+	c.State.Update(func(s *device.Snapshot) { s.SessionID = created.ID; s.Status = "idle" })
+	streamCtx, cancel := context.WithCancel(c.ctx)
+	c.streamCancel = cancel
+	c.wg.Add(1)
+	go c.observe(streamCtx, created.ID)
+	return c.send(ctx, created.ID, cmd.Prompt)
 }
 func (c *Controller) send(ctx context.Context, id, prompt string) error {
 	c.epoch.Add(1)
@@ -234,9 +195,6 @@ func (c *Controller) send(ctx context.Context, id, prompt string) error {
 		s.Summary = "正在提交需求"
 		s.Error = ""
 		s.ResultURL = ""
-		if s.View == device.Preview {
-			s.View = device.Timeline
-		}
 	})
 	if err := c.Provider.Send(ctx, id, prompt); err != nil {
 		c.State.Update(func(s *device.Snapshot) {
@@ -311,11 +269,8 @@ func (c *Controller) publish(ctx context.Context, id string) {
 	if err == nil {
 		result, err = c.store.Publish(ctx, files)
 	}
-	if c.epoch.Load() != epoch {
-		return
-	}
 	c.State.Update(func(s *device.Snapshot) {
-		if s.SessionID != id {
+		if c.epoch.Load() != epoch || s.SessionID != id {
 			return
 		}
 		if err != nil {

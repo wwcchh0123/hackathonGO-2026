@@ -13,11 +13,11 @@ make install
 make dev
 ```
 
-- [模拟控制台](http://localhost:8080/simulator)：文字模拟灵矽工具调用，操作开始 / 暂停 / 修改 / 继续 / 切视图。
+- [模拟控制台](http://localhost:8080/simulator)：发送消息 / 开个新项目；视图在设备本地切换。
 - [模拟设备页](http://localhost:8080/device)：只接收状态和事件，可在另一窗口观察。
 - [健康检查](http://localhost:8080/healthz)。默认控制服务仅监听本机。
 
-建议演示：开始“帮我做一个番茄钟网页” → 运行中暂停 → 输入“按钮改成红色”并点击修改需求 → 等本轮结束 → 看效果 → 点击结果页按钮。模拟模式使用固定番茄钟模板，**不实际生成代码**；没有模拟物理语音或投屏。
+建议演示：发送“帮我做一个番茄钟网页” → 运行中发送“按钮改成红色”（服务自行打断并复用会话）→ 等待自动显示结果 → 点击结果页按钮 → “开个新项目”验证会话切换。继续和暂停也通过发送原话表达。模拟模式使用固定番茄钟模板，**不实际生成代码**；没有模拟物理语音或投屏。
 
 构建后由一个 Go 进程提供页面和接口：
 
@@ -63,7 +63,9 @@ make build run
 
 `AGENTAPI_AGENT_ID` 必须指向预先配置好的 **claudecode** 智能体，`AGENTAPI_ENVIRONMENT_ID` 为云端环境。控制服务不会替你创建 agent/environment 或覆盖其模型。API Key 只由服务端读取，浏览器使用另一个 `CONTROL_TOKEN` 建立 HttpOnly 会话 Cookie；云 MCP 调用使用 `Authorization: Bearer <CONTROL_TOKEN>`。
 
-在灵矽后台配置 SSE URL `https://你的服务域名/mcp`；平台带入 `X-Linx-Device-Id`，须与 `DEVICE_ID` 一致。当前原型仅支持一个配置的设备。真实环境必须配齐鉴权；反向代理应允许 WebSocket、SSE 长连接并关闭 SSE 缓冲。
+云端 MCP 按 [issue #8](https://github.com/wwcchh0123/hackathonGO-2026/issues/8) 提供 `send_message`、`start_new_project`、`get_status` 三个工具，快速返回一句中文，不返回结构化快照。默认 Mock 即可验证整个控制流程；本次不扩展真实 AgentAPI 交互。
+
+在灵矽后台配置 SSE URL `https://你的服务域名/mcp`；POST 调用时平台带入 `X-Linx-Device-Id`，须与 `DEVICE_ID` 一致，GET 建流不要求该头。`X-Linx-Session-Id` 仅用于日志和五秒去重；MCP GET / POST 均使用独立的 CONTROL_TOKEN Bearer 鉴权。当前原型仅支持一个配置的设备。反向代理允许 WebSocket、关闭 SSE 缓冲，读超时至少十分钟；不启用要求客户端回复 ping 的 MCP KeepAlive。配置和智能体提示词见 [协议文档](docs/protocol.md#灵矽配置与部署)。
 
 让 agent 把最终静态网站（`index.html` 和相对路径资源）导出到 `/mnt/session/outputs/`，服务端在 `end_turn` 后经 Files API 下载并托管。不启动任意沙箱端口，不执行构建，也不解压归档文件。需要 Node/Vite 的项目应由 agent 在沙箱构建后导出静态文件。
 

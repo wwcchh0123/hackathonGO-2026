@@ -78,14 +78,12 @@
             <h2>模拟控制台</h2>
             <p>文字模拟灵矽云端工具。语音与投屏交由后续硬件实现。</p>
           </div>
-          <label for="instruction">任务 / 修改需求</label
-          ><textarea id="instruction" maxlength="16000">
+          <label for="instruction">需求 / 修改 / 继续 / 暂停（保留原话）</label
+          ><textarea id="instruction" maxlength="2000">
 帮我做一个番茄钟网页</textarea>
           <div class="buttons">
-            <button data-action="start">开始任务</button
-            ><button data-action="interrupt">暂停</button
-            ><button data-action="modify">修改需求</button
-            ><button data-action="continue">继续</button>
+            <button data-action="message">发送消息</button>
+            <button data-action="new_project">开个新项目</button>
           </div>
           <div class="buttons views">
             <button data-view="timeline">看过程</button

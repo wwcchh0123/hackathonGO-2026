@@ -4,8 +4,10 @@ package progress
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
 )
 
@@ -69,4 +71,41 @@ func truncate(s string, n int) string {
 		return string([]rune(s)[:n]) + "…"
 	}
 	return s
+}
+
+// SpokenStatus is deliberately conservative about free-form provider text:
+// voice tools never read technical identifiers, URLs, JSON, or raw errors aloud.
+func SpokenStatus(s device.Snapshot) string {
+	if s.Error != "" || s.Status == "error" {
+		return "操作未完成，请检查设备上的错误后重试"
+	}
+	var text string
+	switch s.Status {
+	case "creating":
+		text = "正在准备云端环境"
+	case "sending", "running":
+		text = "正在做：" + spokenSummary(s.Summary, "正在处理你的需求")
+	case "idle":
+		text = spokenSummary(s.Summary, "正在等待下一步指令")
+		if s.ResultURL != "" {
+			text += "。结果已经在屏幕上了"
+		}
+	case "terminated":
+		text = "任务已结束，再说个需求就会开始新任务"
+	default:
+		text = "还没有任务，可以告诉我想做什么"
+	}
+	return truncate(text, 59)
+}
+func spokenSummary(s, fallback string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fallback
+	}
+	for _, r := range s {
+		if !unicode.Is(unicode.Han, r) && !unicode.IsSpace(r) && !strings.ContainsRune("，。！？、；：…（）", r) {
+			return fallback
+		}
+	}
+	return strings.TrimRight(truncate(s, 42), "。")
 }

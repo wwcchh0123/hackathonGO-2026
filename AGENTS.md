@@ -2,11 +2,12 @@
 
 ## 范围
 
-本项目实现 issue #6 的 Go 控制服务。硬件端技术栈尚未确定，不引入设备框架或 deck-proto。`internal/transport/httpapi/devui` 仅为嵌入式联调页面，不是硬件产品实现。
+本项目实现 issue #6 的 Go 控制服务，并提供独立的 Mac 软件语音终端 `cmd/voice`。物理硬件技术栈尚未确定，不引入设备框架或 deck-proto。`internal/transport/httpapi/devui` 仅为控制服务联调页面；`internal/voice/ui` 是真实灵矽语音客户端，两者不混用。
 
 ## 模块边界
 
 - `cmd/control`：配置、依赖组装、启动和退出，不写业务流程。
+- `cmd/voice`：软件设备配置、依赖组装和生命周期；`internal/linx` 处理身份、OTA 和灵矽协议，`internal/voice` 处理本地语音桥与页面，`internal/voicecodec` 隔离可选原生 Opus。
 - `internal/session`：唯一的编程控制入口；异步命令、会话绑定和 interrupt → idle → message 顺序。
 - `internal/agentapi`：上游协议和 Mock；不引入设备展示逻辑。
 - `internal/events`：原始 JSON 保留、事件 ID 去重、历史和实时订阅。
@@ -37,5 +38,7 @@
 ## 验证与参考
 
 运行 `make check test build coverage`。默认 Mock 不需要外部服务，测试不得依赖真实云密钥。
+
+改动语音客户端时额外运行 `make voice-test`（需要 libopus/pkg-config）；改动浏览器重采样运行 `node --test internal/voice/test/pcm.test.mjs`。Node 只用于这项开发测试，不是运行或构建依赖。真实设备 ID 保存在被忽略的 `.data/voice`，不得提交绑定信息或设备 token。
 
 本机参考仓库：`~/qbox/agentapi`、`/Users/jicarl/qiniu/Xrobot-docs`；仅作协议依据，不能成为本项目的构建路径依赖。

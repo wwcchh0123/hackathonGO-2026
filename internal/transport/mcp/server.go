@@ -32,7 +32,7 @@ func textResult(text string, failed bool) *mcp.CallToolResult {
 
 func Handler(c *session.Controller) http.Handler {
 	// KeepAlive stays disabled: Linx may not answer server-initiated MCP pings.
-	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.2.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.2.1"}, nil)
 	var mu sync.Mutex
 	recent := make(map[dedupKey]cached)
 	submit := func(who identity, tool, text string) (session.Receipt, error, bool) {
@@ -109,10 +109,18 @@ func Handler(c *session.Controller) http.Handler {
 			return result, nil
 		})
 	}
-	h := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server { return s }, &mcp.SSEOptions{MaxRequestBodyBytes: 32 << 10})
+	getServer := func(*http.Request) *mcp.Server { return s }
+	legacy := mcp.NewSSEHandler(getServer, &mcp.SSEOptions{MaxRequestBodyBytes: 32 << 10})
+	streamable := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
+		Stateless: true, JSONResponse: true, MaxRequestBodyBytes: 32 << 10,
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("X-Accel-Buffering", "no")
+		// A bare GET retains legacy SSE. Streamable clients POST to /mcp and
+		// identify optional GET streams with protocol/session headers.
+		useLegacy := r.URL.Path == "/mcp/message" || (r.Method == http.MethodGet &&
+			r.Header.Get("Mcp-Protocol-Version") == "" && r.Header.Get("Mcp-Session-Id") == "")
+		if r.Method == http.MethodGet && useLegacy {
 			// The SDK advertises the GET path as its POST endpoint.
 			r = r.Clone(r.Context())
 			u := *r.URL
@@ -149,7 +157,11 @@ func Handler(c *session.Controller) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.ContentLength = int64(len(body))
 		}
-		h.ServeHTTP(w, r)
+		if useLegacy {
+			legacy.ServeHTTP(w, r)
+		} else {
+			streamable.ServeHTTP(w, r)
+		}
 	})
 }
 func requestIdentity(r *mcp.CallToolRequest) identity {

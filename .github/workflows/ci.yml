@@ -10,7 +10,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install voice codec dependencies
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev pkg-config
       - run: make check test build
+      - name: Verify voice codec and browser audio
+        run: |
+          make voice-test voice-build
+          node --test internal/voice/test/pcm.test.mjs
       - name: Generate coverage report
         run: make coverage
       - name: Upload coverage to Codecov

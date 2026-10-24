@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -167,7 +168,30 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 			failure(w, 401, "需要控制服务访问令牌")
 			return
 		}
-		if r.Method == http.MethodPost {
+		needsDevice := r.Method == http.MethodPost
+		if needsDevice && r.URL.Path == "/mcp" {
+			// Linx's management console discovers tools before a device exists.
+			// Only protocol metadata may omit device identity; tool calls still
+			// require the configured device, including read-only get_status.
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<10))
+			if err != nil {
+				failure(w, 413, "请求过大或无法读取")
+				return
+			}
+			var message struct {
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(body, &message) != nil {
+				failure(w, 400, "无效 MCP 请求")
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			switch message.Method {
+			case "server/discover", "initialize", "notifications/initialized", "tools/list", "ping":
+				needsDevice = false
+			}
+		}
+		if needsDevice {
 			id := r.Header.Get("X-Linx-Device-Id")
 			if id == "" && cfg.Mode == "mock" {
 				id = cfg.DeviceID
@@ -180,6 +204,8 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		cloud.ServeHTTP(w, r)
 	})
 	mux.Handle("GET /mcp", cloudWithIdentity)
+	mux.Handle("POST /mcp", cloudWithIdentity)
+	mux.Handle("DELETE /mcp", cloudWithIdentity)
 	mux.Handle("POST /mcp/message", cloudWithIdentity)
 	results := http.FileServer(http.Dir(cfg.DataDir))
 	mux.Handle("GET /results/", http.StripPrefix("/results/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

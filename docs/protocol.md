@@ -2,7 +2,17 @@
 
 ## 云端 MCP
 
-以 [issue #8](https://github.com/wwcchh0123/hackathonGO-2026/issues/8) 为准，使用官方 `modelcontextprotocol/go-sdk` 的旧版 SSE：
+工具语义以 [issue #8](https://github.com/wwcchh0123/hackathonGO-2026/issues/8) 为准。使用官方 `modelcontextprotocol/go-sdk`，同一 `/mcp` 地址支持 Streamable HTTP 和旧版 SSE。
+
+### Streamable HTTP（当前灵矽管理端与语音端）
+
+- `POST /mcp` 接收 JSON-RPC，`Accept` 包含 `application/json, text/event-stream`；请求与响应均使用该地址。
+- 支持管理端的 `server/discover`，以及 `initialize → notifications/initialized → tools/list → tools/call`。实际观察到管理端初始化版本为 `2025-11-25`，语音端为 `2025-06-18`；管理端也会探测 `2026-07-28` 的 `server/discover`。
+- 使用无状态 MCP 传输，响应使用 JSON；不创建或要求 `Mcp-Session-Id`。编程会话和五秒去重仍由共享控制服务维护，不受传输连接生命周期影响。
+- 带协议头或会话头的 `GET /mcp`、`DELETE /mcp` 由 Streamable HTTP 处理器按无状态协议返回 405；这是不提供额外订阅流或会话删除的正常行为。`POST /mcp` 必须可用。
+- 管理端获取工具时没有设备 ID，网页体验端可能携带虚拟设备 ID。因此 `server/discover`、`initialize`、`notifications/initialized`、`tools/list`、`ping` 只校验 Bearer，不要求设备匹配；`tools/call` 仍必须通过设备校验。网页能列出工具不代表其虚拟设备已获准控制 Mac，应使用绑定的 Mac 语音客户端验证工具调用。
+
+### 旧版 SSE（兼容）
 
 1. `GET /mcp` 建流，首个 `endpoint` 帧通告 `POST /mcp/message?sessionid=...`。
 2. 向该 endpoint 发送 JSON-RPC：initialize → notifications/initialized → tools/list → tools/call；响应通过 GET 的 SSE `message` 帧返回，POST 返回 HTTP 202。
@@ -15,7 +25,9 @@
 | X-Linx-Session-Id | 不用于调用身份 | 灵矽对话 ID，仅日志和去重 |
 | X-Linx-Agent-Id | 不用于调用身份 | 仅日志 |
 
-MCP 不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOKEN 可为空以便本机演示；配置后 GET/POST 都必须带 Bearer。身份以每次 POST 为准，工具参数不接受设备或会话 ID。
+MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOKEN 可为空以便本机演示；配置后所有 MCP HTTP 请求都必须带 Bearer。工具调用的身份以每次 POST 为准，工具参数不接受设备或会话 ID。`tools/call` 中缺失设备 ID 仅在 mock 模式兼容；显式传入不匹配的设备 ID 始终拒绝。
+
+### 工具
 
 只提供以下三个工具，不提供云端投屏或切画面工具：
 
@@ -157,3 +169,31 @@ data 完整保留上游 JSON（含未知字段），类型取 data.type。首次
 6. GET /v1/files?scope_id={session_id} 分页列举；GET /v1/files/{id}/content 下载结果。
 
 参考仓库仅作协议依据，不作构建依赖。硬件与投屏实现不属于本服务范围。
+
+## 设备侧扩展
+
+Mac 软件终端通过独立的 `cmd/voice` 接入灵矽语音，启动和身份管理见 [语音客户端说明](voice-client.md)。设备身份是控制服务 `DEVICE_ID` 的值，不要使用灵矽对话 session id 替代。语音页面尚未实现端侧 MCP、投屏或上述设备展示通道，也不会声明 `features.mcp`。
+
+灵矽协议依据：本机 `/Users/jicarl/qiniu/Xrobot-docs/docs/xrobot/mcp/software-mcp.md`、`hardware-mcp.md`、`platform/websocket.md`、`guide/mcp-store.md`。云 MCP 配置可在 `config.sse.header.Authorization` 中设置 Bearer；平台自动带入设备 ID。也可参考 [云端 MCP 接入指南](https://linx.qiniu.com/docs/xrobot/mcp/software-mcp)。
+
+## Mac 本地语音桥（独立端口 8090）
+
+`cmd/voice` 只监听 loopback；校验 Host，并要求 WebSocket Origin 与当前 HTTP 页面完全一致。一台设备同一时间只允许一个语音窗口，第二个连接返回 409。此处不使用控制服务的 `CONTROL_TOKEN`；灵矽设备 token 只在 Go 进程内使用，不下发浏览器、不写入 URL 或日志。
+
+| 接口 | 内容 |
+| --- | --- |
+| `GET /` | 独立语音页面，不同于 8080 的 `/simulator` |
+| `GET /api/status` | `device_id`、`stage`、可选激活 `code` / `error`、`audio_available` |
+| `GET /api/voice` | 同源 WebSocket：浏览器 PCM 与 Go/灵矽语音的双向桥 |
+
+`stage` 为 connecting / activation / paired / error；paired 仅表示 OTA 已绑定，真正语音就绪以 WebSocket 的 ready 事件为准。
+
+浏览器发送 `{"type":"start"}` → 二进制 PCM16LE（单声道，16 kHz，每帧 960 samples / 1920 bytes / 60 ms）→ `{"type":"stop"}`。末帧补零，顺序发送完末帧后才发 stop。`{"type":"abort"}` 仅停止语音播报，不代表中断编程任务。网页单次录音最长 60 秒，停止/关闭页面会释放麦克风；发送积压过多会关闭连接。
+
+服务端获取 OTA token 后以 WSS 连接灵矽，发送 Opus 16 kHz / 60 ms hello，等待最多 10 秒。ready 示例：
+
+```json
+{"type":"ready","session_id":"灵矽对话ID","sample_rate":24000,"input_sample_rate":16000,"frame_samples":960}
+```
+
+ready 的 sample_rate 是返回音频采样率；桥按云端 hello 的参数解码 Opus，向浏览器发送该采样率的单声道 PCM16LE 二进制帧。浏览器按每帧实际样本数安排播放，不假设返回音频也是 60 ms。下行文本事件包括 status / activation / ready / stt / tts / notify / ended / error；仅转发白名单语音字段，不转发原始 OTA 响应。正常 tts.stop 等缓冲播放完毕，is_aborted=true 立即清空；录音及本地打断期间丢弃旧回复。云端 goodbye 对应正常 ended，不提示配置错误。断线立即停止采集和播放，用户点击重新连接时重新获取 OTA 凭据，不自动补发上一段录音。

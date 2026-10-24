@@ -1,7 +1,6 @@
 # 灵矽语音编程工作站
 
 [![CI](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/codecov/c/gh/wwcchh0123/hackathonGO-2026?label=coverage)](https://app.codecov.io/gh/wwcchh0123/hackathonGO-2026)
 
 基于 [issue #6 的整体设计](https://github.com/wwcchh0123/hackathonGO-2026/issues/6)：灵矽云理解语音，Go 控制服务编排七牛 AgentAPI，设备拉流渲染并投屏，大屏仅负责显示。
 
@@ -81,6 +80,6 @@ make check test build
 make coverage
 ```
 
-包含 gofmt 检查、Go vet、Go race 测试、二进制构建和 Codecov 上传所需的覆盖率报告。测试只使用本地临时目录和内存/HTTP 假上游，无外部密钥，通常数秒完成；依赖缺失直接失败。覆盖打断后的等待顺序、同会话修改/继续、新会话替换、SSE 回放边界、原始 JSON 保留、MCP → 设备 WebSocket/SSE → 结果托管。GitHub Actions 运行同一组检查。
+包含 gofmt 检查、Go vet、Go race 测试、二进制构建和本地覆盖率报告。测试只使用本地临时目录和内存/HTTP 假上游，无外部密钥，通常数秒完成；依赖缺失直接失败。覆盖打断后的等待顺序、同会话修改/继续、新会话替换、SSE 回放边界、原始 JSON 保留、MCP → 设备 WebSocket/SSE → 结果托管。GitHub Actions 运行同一组检查，覆盖率结果输出到日志，无需配置 Codecov token。
 
 接口约定见 [协议文档](docs/protocol.md)。外部依据为本机 `~/qbox/agentapi` 与 `/Users/jicarl/qiniu/Xrobot-docs`，无需将它们作为构建依赖。

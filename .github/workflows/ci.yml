@@ -13,10 +13,3 @@ jobs:
       - run: make check test build
       - name: Generate coverage report
         run: make coverage
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage.out
-          flags: unittests
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}

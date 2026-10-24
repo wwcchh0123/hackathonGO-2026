@@ -156,4 +156,4 @@ data 完整保留上游 JSON（含未知字段），类型取 data.type。首次
 5. GET /v1/sessions/{id}/events/stream 读取历史与实时 SSE；断线后重连去重。
 6. GET /v1/files?scope_id={session_id} 分页列举；GET /v1/files/{id}/content 下载结果。
 
-参考仓库仅作协议依据，不作构建依赖。硬件与投屏边界见 [硬件接入边界](device-contract.md)。
+参考仓库仅作协议依据，不作构建依赖。硬件与投屏实现不属于本服务范围。

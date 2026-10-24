@@ -31,6 +31,7 @@ let source = null;
 let events = [];
 let seen = new Set();
 let previewURL = '';
+let currentView = 'timeline';
 let socket = null;
 let reconnect = null;
 let stopped = false;
@@ -53,7 +54,7 @@ async function request(path, body) {
   return data;
 }
 function renderEvents() {
-  const view = snapshot?.view || 'timeline';
+  const view = currentView;
   const visible = events.filter((e) =>
     view === 'code'
       ? e.type.includes('tool')
@@ -118,18 +119,23 @@ function render() {
   $('status-text').textContent = statuses[snapshot.status] || snapshot.status;
   $('error').hidden = !snapshot.error;
   $('error').textContent = snapshot.error || '';
-  $('view-name').textContent = views[snapshot.view] || snapshot.view;
+  $('view-name').textContent = views[currentView];
   $('session').textContent =
     `${snapshot.device_id}${snapshot.session_id ? ' / ' + snapshot.session_id : ''}`;
   $('connection').textContent = connected ? '设备通道已连接' : '正在恢复连接';
   $('connection-dot').className = connected ? 'online' : '';
-  const preview = snapshot.view === 'preview' && snapshot.result_url;
+  const preview = currentView === 'preview' && snapshot.result_url;
   $('events').hidden = Boolean(preview);
   $('preview').hidden = !preview;
   if (preview && previewURL !== snapshot.result_url) {
     previewURL = snapshot.result_url;
     $('result-frame').src = previewURL;
     $('result-link').href = previewURL;
+  }
+  if (!snapshot.result_url && previewURL) {
+    previewURL = '';
+    $('result-frame').removeAttribute('src');
+    $('result-link').removeAttribute('href');
   }
   $('show-preview').disabled = !snapshot.result_url;
   renderEvents();
@@ -178,6 +184,10 @@ function connectChannel() {
       const next = JSON.parse(message.data);
       if (!next.device_id || typeof next.revision !== 'number') return;
       const previousID = snapshot?.session_id;
+      if (next.session_id !== previousID || (snapshot?.result_url && !next.result_url))
+        currentView = 'timeline';
+      if (next.result_url && next.result_url !== snapshot?.result_url)
+        currentView = 'preview';
       snapshot = next;
       if (next.session_id !== previousID) subscribe(next.session_id);
       render();
@@ -220,15 +230,15 @@ $('connect').onsubmit = async (event) => {
 };
 document.querySelectorAll('[data-action],[data-view]').forEach((button) => {
   button.onclick = async () => {
-    let command;
-    if (button.dataset.view)
-      command = { action: 'show', view: button.dataset.view };
-    else {
-      const action = button.dataset.action;
-      command = { action: action === 'modify' ? 'interrupt' : action };
-      if (action === 'start' || action === 'modify')
-        command.prompt = $('instruction').value;
+    if (button.dataset.view) {
+      currentView = button.dataset.view;
+      render();
+      return;
     }
+    const command = {
+      action: button.dataset.action,
+      prompt: $('instruction').value,
+    };
     button.disabled = true;
     try {
       $('receipt').textContent = (

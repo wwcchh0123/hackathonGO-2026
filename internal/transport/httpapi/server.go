@@ -149,6 +149,9 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 				failure(w, 400, "无效指令 JSON")
 				return
 			}
+			if cmd.Action == "new_project" {
+				cmd.Action = "start"
+			}
 			receipt, err := c.Submit(cmd)
 			if err != nil {
 				failure(w, 400, err.Error())
@@ -158,17 +161,24 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		})))
 	}
 	cloud := cloudmcp.Handler(c)
-	cloudWithIdentity := protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get("X-Linx-Device-Id")
-		if id == "" && cfg.Mode == "mock" {
-			id = cfg.DeviceID
-		}
-		if id != cfg.DeviceID {
-			failure(w, 403, "未知设备")
+	cloudWithIdentity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cloud MCP accepts only its explicit Bearer credential, never browser cookies.
+		if cfg.Token != "" && !same(r.Header.Get("Authorization"), "Bearer "+cfg.Token) {
+			failure(w, 401, "需要控制服务访问令牌")
 			return
 		}
+		if r.Method == http.MethodPost {
+			id := r.Header.Get("X-Linx-Device-Id")
+			if id == "" && cfg.Mode == "mock" {
+				id = cfg.DeviceID
+			}
+			if id != cfg.DeviceID {
+				failure(w, 403, "未知设备")
+				return
+			}
+		}
 		cloud.ServeHTTP(w, r)
-	}))
+	})
 	mux.Handle("GET /mcp", cloudWithIdentity)
 	mux.Handle("POST /mcp/message", cloudWithIdentity)
 	results := http.FileServer(http.Dir(cfg.DataDir))

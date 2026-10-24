@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>灵矽 · Mac 语音终端</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<body>
+<main>
+  <header><span class="brand">灵矽 <b>VOICE LAB</b></span><span class="tag">Mac 软件终端</span></header>
+  <section class="intro"><p class="eyebrow">让你的 Mac，成为灵矽的声音入口</p><h1>开口，连接你的智能体。</h1><p class="description">使用这台 Mac 的麦克风和扬声器，与灵矽智能体直接对话。</p></section>
+  <section class="console">
+    <div class="connection"><span id="indicator" class="dot"></span><strong id="status" role="status">正在查询设备…</strong><button id="connect" class="secondary" disabled>连接智能体</button></div>
+    <div id="activation" class="activation" hidden><p>在灵矽控制台添加设备，并选择要对话的智能体</p><strong id="code"></strong><p>绑定完成后，这里会自动更新。</p><a href="https://xrobo.qiniu.com/" target="_blank" rel="noopener noreferrer">打开灵矽控制台 ↗</a></div>
+    <div class="voice-area"><div id="orb" class="orb" aria-hidden="true"><span>声</span></div><p id="hint">先连接智能体，再开启麦克风。</p><div class="actions"><button id="record" disabled>开始说话</button><button id="interrupt" class="secondary" disabled>停止播报</button></div><p class="small">点击开始录音，说完点击发送。每次最长 60 秒。</p></div>
+    <p id="error" class="error" role="alert" hidden></p>
+  </section>
+  <section class="conversation"><div class="section-heading"><h2>对话记录</h2><button id="clear" class="text-button">清空</button></div><div id="messages" role="log" aria-live="polite"><p class="empty">你说的话和智能体的回复会显示在这里。</p></div></section>
+  <footer><span>设备 ID <code id="device">—</code></span><span>语音仅在点击录音后发送 · 记录仅保留在当前页面</span></footer>
+</main>
+</body></html>

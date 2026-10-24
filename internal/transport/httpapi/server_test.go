@@ -218,6 +218,16 @@ func voiceResult(t *testing.T, res *mcp.CallToolResult, failed bool) string {
 	return value.Text
 }
 func TestVoiceProtocolIdentityDedupAndFastAdmission(t *testing.T) {
+	for _, streamable := range []bool{false, true} {
+		name := "legacy-sse"
+		if streamable {
+			name = "streamable-http"
+		}
+		t.Run(name, func(t *testing.T) { testVoiceProtocol(t, streamable) })
+	}
+}
+
+func testVoiceProtocol(t *testing.T, streamable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	mock := agentapi.NewMock(ctx)
@@ -230,7 +240,14 @@ func TestVoiceProtocolIdentityDedupAndFastAdmission(t *testing.T) {
 	defer func() { cancel(); c.Wait() }()
 	headers := &linxTransport{conversation: "conversation-a"}
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-linx", Version: "1"}, nil)
-	cloud, err := client.Connect(ctx, &mcp.SSEClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: &http.Client{Transport: headers}}, nil)
+	transport := func() mcp.Transport {
+		httpClient := &http.Client{Transport: headers}
+		if streamable {
+			return &mcp.StreamableClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: httpClient}
+		}
+		return &mcp.SSEClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: httpClient}
+	}
+	cloud, err := client.Connect(ctx, transport(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,8 +290,8 @@ func TestVoiceProtocolIdentityDedupAndFastAdmission(t *testing.T) {
 			t.Fatalf("duplicate receipt changed: %s", got)
 		}
 	}
-	// A second SSE connection shares dedup state, including simultaneous retries.
-	second, err := client.Connect(ctx, &mcp.SSEClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: &http.Client{Transport: headers}}, nil)
+	// A second connection shares dedup state, including simultaneous retries.
+	second, err := client.Connect(ctx, transport(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

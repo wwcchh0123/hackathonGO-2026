@@ -1,6 +1,10 @@
-// Command device-display is the Linux device-side display bridge. It reads
-// the current session from the control service, renders it locally, and lets
-// an external AirPlay sender mirror that local display.
+// Command device-display simulates the Linux-side Linxi hardware.
+//
+// The simulated device exposes a device MCP endpoint. When the Linxi cloud
+// calls cast_screen, it opens the supplied public session page in Chromium
+// and mirrors that local browser display through AirPlay. Session events are
+// therefore rendered by the control service page; this process does not call
+// AgentAPI or hold a control-service token.
 package main
 
 import (
@@ -14,35 +18,48 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/devicecast"
-	"github.com/wwcchh0123/hackathonGO-2026/internal/devicedisplay"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/devicecontrol"
 )
 
 type config struct {
-	ControlURL, ControlToken   string
-	ListenAddr, ViewURL        string
-	Browser                    string
-	BrowserStart               bool
-	Width, Height              int
-	AirPlayTarget              string
-	AirPlayPort                int
-	AirPlayPassword            string
-	AirPlayName                string
-	AirPlayCredentials         string
-	AirPlayFPS, AirPlayBitrate int
-	AirPlayHWAccel             string
-	AirPlayVideoCodec          string
-	Doubletake                 string
+	ListenAddr        string
+	Browser           string
+	Width, Height     int
+	AllowedHosts      []string
+	AirPlayTarget     string
+	AirPlayPort       int
+	AirPlayPassword   string
+	AirPlayName       string
+	AirPlayCredential string
+	AirPlayFPS        int
+	AirPlayBitrate    int
+	AirPlayHWAccel    string
+	AirPlayVideoCode  string
+	Doubletake        string
+}
+
+type runtime struct {
+	base context.Context
+	cfg  config
+
+	browser *browser
+	cast    *devicecast.Runner
+
+	mu            sync.Mutex
+	airplayCancel context.CancelFunc
 }
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("device display stopped", "error", err)
+		slog.Error("device MCP stopped", "error", err)
 		os.Exit(1)
 	}
 }
@@ -55,92 +72,101 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store := devicedisplay.NewStore()
-	view := devicedisplay.NewView(store, cfg.AirPlayName)
+	rt := &runtime{
+		base:    ctx,
+		cfg:     cfg,
+		browser: &browser{binary: cfg.Browser, width: cfg.Width, height: cfg.Height},
+		cast: devicecast.New(devicecast.Config{
+			Binary: cfg.Doubletake, Target: cfg.AirPlayTarget, Port: cfg.AirPlayPort,
+			Password: cfg.AirPlayPassword, Credentials: cfg.AirPlayCredential,
+			FPS: cfg.AirPlayFPS, Bitrate: cfg.AirPlayBitrate,
+			HWAccel: cfg.AirPlayHWAccel, VideoCodec: cfg.AirPlayVideoCode,
+		}),
+	}
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("listen display: %w", err)
+		return fmt.Errorf("listen device MCP: %w", err)
 	}
-	httpServer := &http.Server{Handler: view.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Handler: devicecontrol.Handler(rt), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
-		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("display server stopped", "error", err)
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("device MCP HTTP server stopped", "error", err)
 			cancel()
 		}
 	}()
 
-	client, err := devicedisplay.NewClient(devicedisplay.ClientConfig{ControlURL: cfg.ControlURL, Token: cfg.ControlToken}, store)
-	if err != nil {
-		return err
-	}
-	go func() {
-		if err := client.Run(ctx); err != nil {
-			slog.Error("control client stopped", "error", err)
-			cancel()
-		}
-	}()
-
-	if cfg.BrowserStart {
-		go launchBrowser(ctx, cfg)
-	}
-	go func() {
-		err := devicecast.New(devicecast.Config{
-			Binary: cfg.Doubletake, Target: cfg.AirPlayTarget, Port: cfg.AirPlayPort,
-			Password: cfg.AirPlayPassword, Credentials: cfg.AirPlayCredentials,
-			FPS: cfg.AirPlayFPS, Bitrate: cfg.AirPlayBitrate,
-			HWAccel: cfg.AirPlayHWAccel, VideoCodec: cfg.AirPlayVideoCodec,
-		}).Run(ctx)
-		if err != nil && ctx.Err() == nil {
-			slog.Error("AirPlay sender stopped", "error", err)
-			cancel()
-		}
-	}()
-
-	slog.Info("device display ready", "control", cfg.ControlURL, "view", cfg.ViewURL, "airplay_target", cfg.AirPlayTarget)
+	slog.Info("device MCP ready", "listen", cfg.ListenAddr, "airplay_target", cfg.AirPlayTarget, "receiver", cfg.AirPlayName)
 	<-ctx.Done()
+	rt.StopCast(context.Background())
 	shutdown, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	return httpServer.Shutdown(shutdown)
+	return server.Shutdown(shutdown)
 }
 
-func loadConfig() (config, error) {
-	// Keep device-only settings here instead of adding them to the control
-	// service. The defaults describe the Raspberry Pi proof-of-concept and its
-	// validated Windows receiver, so a local run works without a long command
-	// line. Deployments can override every value through the environment.
-	c := config{
-		ControlURL:    env("CONTROL_URL", "http://127.0.0.1:8080"),
-		ControlToken:  os.Getenv("CONTROL_TOKEN"),
-		ListenAddr:    env("DISPLAY_LISTEN_ADDR", "127.0.0.1:8787"),
-		ViewURL:       env("DISPLAY_URL", "http://127.0.0.1:8787"),
-		Browser:       os.Getenv("BROWSER_BIN"),
-		BrowserStart:  boolEnv("BROWSER_START", true),
-		Width:         intEnv("SCREEN_WIDTH", 1920),
-		Height:        intEnv("SCREEN_HEIGHT", 1080),
-		AirPlayTarget: env("AIRPLAY_TARGET", "192.168.1.4"),
-		AirPlayPort:   intEnv("AIRPLAY_PORT", 7001),
-		// 3939 is the PIN of the local validation receiver. Set a different
-		// value in any deployment that uses another screen or PIN.
-		AirPlayPassword:    env("AIRPLAY_PASSWORD", "3939"),
-		AirPlayName:        env("AIRPLAY_NAME", "Windows AirPlay@MISAKI-DESKTOP"),
-		AirPlayCredentials: env("AIRPLAY_CREDENTIALS", "/tmp/doubletake/credentials.json"),
-		AirPlayFPS:         intEnv("AIRPLAY_FPS", 20),
-		AirPlayBitrate:     intEnv("AIRPLAY_BITRATE", 3000),
-		AirPlayHWAccel:     env("AIRPLAY_HWACCEL", "auto"),
-		AirPlayVideoCodec:  env("AIRPLAY_VIDEO_CODEC", "h264"),
-		Doubletake:         env("DOUBLETAKE_BIN", "doubletake"),
+func (r *runtime) ScanScreens(context.Context) ([]devicecontrol.Screen, error) {
+	if r.cfg.AirPlayTarget == "" {
+		return []devicecontrol.Screen{}, nil
 	}
-	if c.Width < 320 || c.Height < 240 {
-		return c, fmt.Errorf("SCREEN_WIDTH and SCREEN_HEIGHT are too small")
-	}
-	if _, err := url.ParseRequestURI(c.ViewURL); err != nil {
-		return c, fmt.Errorf("invalid DISPLAY_URL: %w", err)
-	}
-	return c, nil
+	return []devicecontrol.Screen{{
+		ID:   fmt.Sprintf("airplay:%s:%d", r.cfg.AirPlayTarget, r.cfg.AirPlayPort),
+		Name: r.cfg.AirPlayName,
+	}}, nil
 }
 
-func launchBrowser(ctx context.Context, cfg config) {
-	binary := cfg.Browser
+func (r *runtime) CastScreen(ctx context.Context, rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("网页地址无效")
+	}
+	if len(r.cfg.AllowedHosts) > 0 && !contains(r.cfg.AllowedHosts, parsed.Hostname()) {
+		return fmt.Errorf("网页地址不在允许的展示服务范围内")
+	}
+	if r.cfg.AirPlayTarget == "" {
+		return fmt.Errorf("没有配置 AirPlay 投屏目标")
+	}
+	if err := r.browser.Open(r.base, rawURL); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if r.airplayCancel == nil {
+		airplayCtx, cancel := context.WithCancel(r.base)
+		r.airplayCancel = cancel
+		go func() {
+			if err := r.cast.Run(airplayCtx); err != nil && ctx.Err() == nil {
+				slog.Error("AirPlay sender stopped", "error", err)
+			}
+		}()
+	}
+	r.mu.Unlock()
+	slog.Info("cast screen", "url", rawURL, "target", r.cfg.AirPlayName)
+	return nil
+}
+
+func (r *runtime) StopCast(context.Context) error {
+	r.mu.Lock()
+	cancel := r.airplayCancel
+	r.airplayCancel = nil
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return r.browser.Stop()
+}
+
+type browser struct {
+	mu     sync.Mutex
+	binary string
+	width  int
+	height int
+	cancel context.CancelFunc
+	done   <-chan error
+}
+
+func (b *browser) Open(parent context.Context, rawURL string) error {
+	if err := b.Stop(); err != nil {
+		return err
+	}
+	binary := b.binary
 	if binary == "" {
 		for _, candidate := range []string{"chromium", "chromium-browser", "google-chrome"} {
 			if path, err := exec.LookPath(candidate); err == nil {
@@ -150,31 +176,93 @@ func launchBrowser(ctx context.Context, cfg config) {
 		}
 	}
 	if binary == "" {
-		slog.Warn("browser not found; display server remains available", "set", "BROWSER_BIN")
-		return
+		return fmt.Errorf("找不到 Chromium，请设置 BROWSER_BIN")
 	}
+	ctx, cancel := context.WithCancel(parent)
 	args := []string{
 		"--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--hide-scrollbars",
 		"--no-first-run", "--no-default-browser-check", "--disable-features=Translate,TranslateUI,MediaRouter",
 		"--disable-translate", "--lang=zh-CN", "--window-position=0,0",
-		fmt.Sprintf("--window-size=%d,%d", cfg.Width, cfg.Height), "--kiosk", "--app=" + withAirPlay(cfg.ViewURL, cfg.AirPlayName),
+		fmt.Sprintf("--window-size=%d,%d", b.width, b.height), "--kiosk", "--app=" + rawURL,
 	}
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil && ctx.Err() == nil {
-		slog.Warn("browser exited", "error", err)
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return fmt.Errorf("启动浏览器: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	b.mu.Lock()
+	b.cancel = cancel
+	b.done = done
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *browser) Stop() error {
+	b.mu.Lock()
+	cancel, done := b.cancel, b.done
+	b.cancel, b.done = nil, nil
+	b.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("浏览器退出超时")
 	}
 }
 
-func withAirPlay(raw, name string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return raw
+func loadConfig() (config, error) {
+	c := config{
+		ListenAddr:        env("DEVICE_MCP_LISTEN_ADDR", "127.0.0.1:8787"),
+		Browser:           os.Getenv("BROWSER_BIN"),
+		Width:             intEnv("SCREEN_WIDTH", 1920),
+		Height:            intEnv("SCREEN_HEIGHT", 1080),
+		AllowedHosts:      splitEnv("DISPLAY_ALLOWED_HOSTS"),
+		AirPlayTarget:     env("AIRPLAY_TARGET", "192.168.1.4"),
+		AirPlayPort:       intEnv("AIRPLAY_PORT", 7001),
+		AirPlayPassword:   env("AIRPLAY_PASSWORD", "3939"),
+		AirPlayName:       env("AIRPLAY_NAME", "Windows AirPlay@MISAKI-DESKTOP"),
+		AirPlayCredential: env("AIRPLAY_CREDENTIALS", "/tmp/doubletake/credentials.json"),
+		AirPlayFPS:        intEnv("AIRPLAY_FPS", 20),
+		AirPlayBitrate:    intEnv("AIRPLAY_BITRATE", 3000),
+		AirPlayHWAccel:    env("AIRPLAY_HWACCEL", "auto"),
+		AirPlayVideoCode:  env("AIRPLAY_VIDEO_CODEC", "h264"),
+		Doubletake:        env("DOUBLETAKE_BIN", "doubletake"),
 	}
-	query := parsed.Query()
-	query.Set("airplay", name)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
+	if c.Width < 320 || c.Height < 240 {
+		return c, fmt.Errorf("SCREEN_WIDTH and SCREEN_HEIGHT are too small")
+	}
+	if c.AirPlayCredential != "" && filepath.Dir(c.AirPlayCredential) != "." {
+		if err := os.MkdirAll(filepath.Dir(c.AirPlayCredential), 0o700); err != nil {
+			return c, fmt.Errorf("prepare AirPlay credential directory: %w", err)
+		}
+	}
+	return c, nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func splitEnv(key string) []string {
+	var values []string
+	for _, value := range strings.Split(os.Getenv(key), ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func env(key, fallback string) string {
@@ -190,16 +278,4 @@ func intEnv(key string, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-func boolEnv(key string, fallback bool) bool {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

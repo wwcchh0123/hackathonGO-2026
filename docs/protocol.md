@@ -40,6 +40,8 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 成功结果以 MCP `content[0].text` 中的 **JSON** 返回；不设置 `structuredContent/outputSchema`。灵矽读取 JSON 后生成一句口语回复，不朗读编号、JSON 或链接。业务拒绝为 `isError=true` 和简短原因。修改性工具只做有界内存受理，不等待上游，延迟目标仍为 P99 < 300 ms；查询会访问上游，单次读取预算默认 10 秒。
 
+配置 `PUBLIC_URL` 后，`new_task`、`send_message` 和 `get_task` 的 JSON 结果附带 `display_url`。这是按 `task_ref` 绑定的公开只读展示页，灵矽 Agent 必须把完整值原样传给独立设备 MCP 的 `cast_screen`。创建任务是异步的，设备可以先打开地址；展示页会在云端 Session 建立后自动重连。`display_url` 不包含 AgentAPI Key、CONTROL_TOKEN 或灵矽身份。
+
 ```json
 {"accepted":true,"message":"已受理，请查询任务确认提交和执行结果","task_ref":"task_...","command_id":"cmd_..."}
 ```
@@ -108,7 +110,7 @@ location / {
 
 ## 设备展示链路
 
-设备展示选择独立于云端四工具和灵矽对话发送目标。本期提供受鉴权的 HTTP 协议供设备界面明确选任务；语音查询不会自动切屏。硬件渲染和 AirPlay 仍由 #12 负责；`devui` 只是联调页面，`internal/voice/ui` 仍是独立语音客户端。
+设备展示选择独立于云端四工具和灵矽对话发送目标。控制服务提供一张无需控制令牌的任务展示页，模拟树莓派设备 MCP 负责让本地 Chromium 打开它，再由 AirPlay sender 镜像浏览器画面。设备不访问 AgentAPI，也不持有控制服务令牌；`devui` 只是受保护的联调页面，`internal/voice/ui` 仍是独立语音客户端。
 
 | 接口 | 用途 |
 | --- | --- |
@@ -124,6 +126,15 @@ location / {
 | POST /api/tasks/{task_ref}/preview | 空闲时有界下载 HTML 导出文件并托管，返回 result_url |
 | GET /results/{随机发布ID}/... | 已发布静态预览；不暴露目录列表 |
 | GET /healthz | 无凭据健康检查，不检查云依赖 |
+
+给设备浏览器使用的公开展示接口：
+
+| 接口 | 用途 |
+| --- | --- |
+| GET /display/?task_ref=... | 1920×1080 深色大屏页面；只读取 URL 中指定任务 |
+| GET /display/events?task_ref=... | 先发送任务快照和页面元信息，再回放有界原始事件并持续推送 |
+
+展示页的 `task_ref` 只允许当前进程仍保留的任务引用。它不会提供任务切换、发送消息、预览下载或其他写操作；未知/过期引用返回 404。设备浏览器应直接使用 `display_url`，不要拼接内部 API 地址或附带控制令牌。多个任务的展示切换就是重新调用 `cast_screen` 并传入另一个任务的 `display_url`。
 
 设备 API 使用 Bearer 或 Cookie；浏览器 WebSocket/EventSource 用 Cookie，密钥不进入 URL。MCP 不接受 Cookie。快照中的 task_ref/session_id 只表示展示选择，command_id/command_state/error 表示该任务的本地控制结果；status 是最近查询或实时观察得到的云端状态，stop_reason 独立返回，summary_event_id/summary_time 保留摘录来源。
 

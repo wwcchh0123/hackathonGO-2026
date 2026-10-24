@@ -410,3 +410,47 @@ func TestMCPThroughReverseProxy(t *testing.T) {
 		t.Fatalf("proxied POST: %d", response.StatusCode)
 	}
 }
+
+func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mock := agentapi.NewMock(ctx)
+	mock.Step = time.Millisecond
+	ts := httptest.NewUnstartedServer(nil)
+	base := "http://" + ts.Listener.Addr().String()
+	cfg := config.Config{Mode: "mock", DeviceID: "test-device", DataDir: t.TempDir(), PublicURL: base}
+	c := session.New(ctx, mock, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir, PublicURL: base})
+	ts.Config.Handler = Handler(cfg, c)
+	ts.Start()
+	defer ts.Close()
+	defer func() { c.Wait() }()
+
+	receipt, err := c.Submit(session.Command{Action: "start", Prompt: "展示测试"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDetail(t, c, receipt)
+
+	page, err := http.Get(ts.URL + "/display/?task_ref=" + url.QueryEscape(receipt.TaskRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(pageBody), "Agent Observatory") {
+		t.Fatalf("display page: %d %s", page.StatusCode, pageBody)
+	}
+
+	stream, err := http.Get(ts.URL + "/display/events?task_ref=" + url.QueryEscape(receipt.TaskRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	if stream.StatusCode != http.StatusOK || stream.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("display stream: %d %q", stream.StatusCode, stream.Header.Get("Content-Type"))
+	}
+	line, err := bufio.NewReader(stream.Body).ReadString('\n')
+	if err != nil || line != "event: device-snapshot\n" {
+		t.Fatalf("display snapshot: %q (%v)", line, err)
+	}
+}

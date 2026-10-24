@@ -58,7 +58,7 @@ go run ./cmd/voice -pair-only
 
 当前实现的是设备语音连接。控制服务仍是 `cmd/control`，默认独立监听 8080，可由灵矽云端 MCP 调用。语音客户端没有本地 Claude Code 进程，不处理编程权限或执行命令；真实编程需另外配置 AgentAPI，默认 Mock 只模拟开发过程。
 
-接编程工具时，把控制服务的 `DEVICE_ID` 配成这里显示的 `device_id`，在灵矽配置 `/mcp` 地址并关联智能体。服务同时支持 Streamable HTTP 和旧版 SSE，详见 [MCP 协议与配置](protocol.md#云端-mcp)。灵矽对话 session_id 与 AgentAPI session_id 是两套 ID。设备展示通道、编程事件 SSE、端侧 MCP 和 AirPlay 还没有加入此语音页面；hello 不会宣称支持端侧 MCP。
+接编程工具时，把控制服务的 `DEVICE_ID` 配成这里显示的 `device_id`，在灵矽配置控制 MCP `/mcp` 和设备 MCP `/device/mcp`，并关联智能体。服务同时支持 Streamable HTTP 和旧版 SSE，详见 [MCP 协议与配置](protocol.md#云端-mcp)。灵矽对话 session_id 与 AgentAPI session_id/task_ref 是三套不同的标识。控制 MCP 返回 `display_url` 后，智能体把它原样交给设备 MCP 的 `cast_screen`；设备浏览器渲染展示页并通过 AirPlay 镜像。
 
 ## 验证
 
@@ -70,7 +70,7 @@ node --test internal/voice/test/pcm.test.mjs
 
 默认控制服务测试不依赖 libopus。语音测试额外启用 `opus` 构建标签，覆盖真实编码/解码与 16/24 kHz 输出；其他测试使用本地 HTTP/WebSocket 假上游，覆盖激活码 → 绑定 → 获取 token、握手鉴权、hello 超时、完整语音桥、停止播报后丢弃旧音频、关闭页面取消激活、跨站请求和双窗口限制。浏览器重采样测试覆盖 16/44.1/48/96 kHz、跨回调连续性、PCM16 裁剪与末帧补零。Node 只用于这项测试，不参与应用运行或构建。
 
-2026-10-24 此前已使用真实绑定设备验证语音收发，并通过公网隧道收到灵矽对旧三个 MCP 工具的真实调用。Issue #18 的四工具已通过官方 SDK 回环和真实 AgentAPI HTTP 联调；本次没有可用的绑定设备身份目录，因此没有声称新四工具已在 Mac 语音端实测。真实 AirPlay 尚未完成联调。绑定身份和凭据均不入库。
+2026-10-25 已使用新的真实绑定设备完成 ASR/TTS、控制 MCP 创建 AgentAPI Session、设备 MCP 打开展示页和多任务 `list_tasks → get_task → cast_screen` 链路验证；本地模拟设备的浏览器渲染和 AirPlay sender 已启动。验证时 AirPlay 接收端离线，因此文档只把接收端画面显示作为待现场复验项，不把 sender 重试误报为屏幕已显示。绑定身份和凭据均不入库。
 
 ## 常见问题
 

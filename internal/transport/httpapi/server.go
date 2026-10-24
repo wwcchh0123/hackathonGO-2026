@@ -19,6 +19,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/config"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/devicedisplay"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
 	cloudmcp "github.com/wwcchh0123/hackathonGO-2026/internal/transport/mcp"
 )
@@ -118,6 +121,18 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		}
 	})))
 	taskAPI(mux, protect, c)
+	// The device browser gets a public, task-scoped URL. It intentionally does
+	// not use protect: a browser launched by the hardware cannot safely carry
+	// the control token, and the task_ref is only an in-memory read-only key.
+	mux.HandleFunc("GET /display", func(w http.ResponseWriter, r *http.Request) {
+		target := "/display/"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	})
+	mux.Handle("GET /display/events", displayEvents(c))
+	mux.Handle("GET /display/", http.StripPrefix("/display/", devicedisplay.StaticHandler()))
 
 	if cfg.DevTools {
 		mux.Handle("POST /api/commands", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +152,7 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 			JSON(w, 202, receipt)
 		})))
 	}
-	cloud := cloudmcp.Handler(c)
+	cloud := cloudmcp.Handler(c, cfg.PublicURL)
 	cloudWithIdentity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Cloud MCP accepts only its explicit Bearer credential, never browser cookies.
 		if cfg.Token != "" && !same(r.Header.Get("Authorization"), "Bearer "+cfg.Token) {
@@ -148,7 +163,7 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		if needsDevice && r.URL.Path == "/mcp" {
 			// Linx's management console discovers tools before a device exists.
 			// Only protocol metadata may omit device identity; tool calls still
-			// require the configured device, including read-only get_status.
+			// require the configured device, including read-only task queries.
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<10))
 			if err != nil {
 				failure(w, 413, "请求过大或无法读取")
@@ -242,4 +257,97 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func displayEvents(c *session.Controller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ref := r.URL.Query().Get("task_ref")
+		if ref == "" {
+			failure(w, http.StatusBadRequest, "缺少 task_ref")
+			return
+		}
+		zero := 0
+		d, err := c.GetTask(r.Context(), ref, session.DetailOptions{EventsLimit: &zero})
+		if err != nil {
+			taskFailure(w, err)
+			return
+		}
+		observation, err := c.Observe(r.Context(), ref, r.Header.Get("Last-Event-ID"))
+		if err != nil {
+			taskFailure(w, err)
+			return
+		}
+		defer observation.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache, no-transform")
+		w.Header().Set("X-Accel-Buffering", "no")
+		rc := http.NewResponseController(w)
+		if rc.Flush() != nil {
+			return
+		}
+		snapshot := displaySnapshot(d)
+		if err := writeDisplayEvent(w, rc, "device-snapshot", "", snapshot); err != nil {
+			return
+		}
+		if err := writeDisplayEvent(w, rc, "session-meta", "", map[string]any{
+			"taskRef":   ref,
+			"sessionId": snapshot.SessionID,
+			"runtime":   d.Runtime,
+			"source":    "AgentAPI session event stream",
+		}); err != nil {
+			return
+		}
+		after := r.Header.Get("Last-Event-ID")
+		if after == "" {
+			after = r.URL.Query().Get("after")
+		}
+		err = observation.Run(after, func(f events.Frame) error {
+			return writeDisplayEvent(w, rc, "session-event", f.ID, f.Data)
+		})
+		if err != nil && r.Context().Err() == nil {
+			slog.Debug("public display stream closed", "task_ref", ref, "error", err)
+		}
+	})
+}
+
+func displaySnapshot(d session.Detail) device.Snapshot {
+	snapshot := device.Snapshot{
+		TaskRef:    d.Ref,
+		SessionID:  d.SessionID,
+		Status:     d.Status,
+		Prompt:     d.Title,
+		StopReason: d.StopReason,
+		ResultURL:  d.ResultURL,
+	}
+	if d.Summary != nil {
+		snapshot.Summary = d.Summary.Text
+		snapshot.SummaryEventID = d.Summary.EventID
+		snapshot.SummaryTime = &d.Summary.Time
+	}
+	if d.Command != nil {
+		snapshot.CommandID = d.Command.ID
+		snapshot.CommandState = d.Command.State
+		snapshot.Error = d.Command.Error
+	}
+	return snapshot
+}
+
+func writeDisplayEvent(w http.ResponseWriter, rc *http.ResponseController, name, id string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := rc.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data); err != nil {
+		return err
+	}
+	return rc.Flush()
 }

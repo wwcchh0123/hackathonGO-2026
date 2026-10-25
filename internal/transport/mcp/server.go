@@ -42,10 +42,21 @@ func decodeArgs(raw json.RawMessage, target any) error {
 	return nil
 }
 
-// Handler exposes the control MCP. publicURL is deliberately used only to
-// construct a browser URL; the device receives that URL through its own MCP
-// and never receives AgentAPI credentials or the control token.
-func Handler(c *session.Controller, publicURL string) http.Handler {
+// Handler keeps the single-controller entry point used by small embedders.
+// publicURL is optional for compatibility; when present, task mutations and
+// details include the URL that the device browser can open for projection.
+func Handler(c *session.Controller, publicURL ...string) http.Handler {
+	baseURL := ""
+	if len(publicURL) > 0 {
+		baseURL = publicURL[0]
+	}
+	return HandlerFor(func(string) *session.Controller { return c }, baseURL)
+}
+
+// HandlerFor keeps the MCP wire protocol independent from the control-plane
+// registry. The resolver is called only for tools/call and may route each
+// authenticated device to its own session controller.
+func HandlerFor(resolve func(string) *session.Controller, publicURL string) http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.3.0"}, nil)
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}
 	ref := map[string]any{"type": "string", "minLength": 1, "maxLength": 100}
@@ -53,7 +64,7 @@ func Handler(c *session.Controller, publicURL string) http.Handler {
 	schemas := map[string]map[string]any{
 		"new_task":     {"text": text, "parent_task_ref": ref},
 		"send_message": {"text": text, "task_ref": ref},
-		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": str, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
+		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": str, "agent_id": str, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
 		"get_task":     {"task_ref": ref, "command_id": str, "events_limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "events_page": str, "files_page": str},
 	}
 	descriptions := map[string]string{
@@ -80,7 +91,12 @@ func Handler(c *session.Controller, publicURL string) http.Handler {
 				var in session.ListOptions
 				err = decodeArgs(r.Params.Arguments, &in)
 				if err == nil {
-					value, err = c.ListTasks(ctx, in)
+					controller := resolve(who.device)
+					if controller == nil {
+						err = fmt.Errorf("未知设备")
+					} else {
+						value, err = controller.ListTasks(ctx, in)
+					}
 				}
 			case "get_task":
 				var in struct {
@@ -89,7 +105,12 @@ func Handler(c *session.Controller, publicURL string) http.Handler {
 				}
 				err = decodeArgs(r.Params.Arguments, &in)
 				if err == nil {
-					value, err = c.GetTask(ctx, in.TaskRef, in.DetailOptions)
+					controller := resolve(who.device)
+					if controller == nil {
+						err = fmt.Errorf("未知设备")
+					} else {
+						value, err = controller.GetTask(ctx, in.TaskRef, in.DetailOptions)
+					}
 				}
 			default:
 				var in struct {
@@ -106,7 +127,12 @@ func Handler(c *session.Controller, publicURL string) http.Handler {
 						if name == "new_task" {
 							action = "start"
 						}
-						value, err = c.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Source: "mcp", ConversationID: who.conversation})
+						controller := resolve(who.device)
+						if controller == nil {
+							err = fmt.Errorf("未知设备")
+						} else {
+							value, err = controller.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Source: "mcp", ConversationID: who.conversation})
+						}
 					}
 				}
 			}
@@ -225,6 +251,7 @@ func isNgrokHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	return strings.HasSuffix(host, ".ngrok-free.dev") || strings.HasSuffix(host, ".ngrok.app") || strings.HasSuffix(host, ".ngrok.io")
 }
+
 func requestIdentity(r *mcp.CallToolRequest) identity {
 	meta, _ := r.Params.Meta[identityMeta].(map[string]any)
 	read := func(key string) string { v, _ := meta[key].(string); return v }

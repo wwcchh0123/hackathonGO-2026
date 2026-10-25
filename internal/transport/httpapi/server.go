@@ -22,6 +22,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/config"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/controlplane"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/devicedisplay"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
@@ -29,7 +30,7 @@ import (
 	cloudmcp "github.com/wwcchh0123/hackathonGO-2026/internal/transport/mcp"
 )
 
-//go:embed devui/*
+//go:embed devui/* adminui/*
 var devUI embed.FS
 
 func JSON(w http.ResponseWriter, status int, v any) {
@@ -55,6 +56,14 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 }
 func same(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 func Handler(cfg config.Config, c *session.Controller) http.Handler {
+	return handler(cfg, c, nil)
+}
+
+func HandlerWithManager(cfg config.Config, manager *controlplane.Manager) http.Handler {
+	return handler(cfg, manager.DefaultController(), manager)
+}
+
+func handler(cfg config.Config, c *session.Controller, manager *controlplane.Manager) http.Handler {
 	mux := http.NewServeMux()
 	protect := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +147,9 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 	mux.Handle("GET /display/events", displayEvents(c))
 	mux.Handle("POST /display/preview", displayPreview(c))
 	mux.Handle("GET /display/", http.StripPrefix("/display/", devicedisplay.StaticHandler()))
+	if manager != nil {
+		adminAPI(mux, protect, manager)
+	}
 
 	if cfg.DevTools {
 		mux.Handle("POST /api/commands", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +169,13 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 			JSON(w, 202, receipt)
 		})))
 	}
-	cloud := cloudmcp.Handler(c, cfg.PublicURL)
+	cloud := cloudmcp.HandlerFor(func(id string) *session.Controller {
+		if manager == nil {
+			return c
+		}
+		controller, _ := manager.Controller(id)
+		return controller
+	}, cfg.PublicURL)
 	cloudWithIdentity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Cloud MCP accepts only its explicit Bearer credential, never browser cookies.
 		if cfg.Token != "" && !same(r.Header.Get("Authorization"), "Bearer "+cfg.Token) {
@@ -168,7 +186,7 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		if needsDevice && r.URL.Path == "/mcp" {
 			// Linx's management console discovers tools before a device exists.
 			// Only protocol metadata may omit device identity; tool calls still
-			// require the configured device, including read-only task queries.
+			// require the configured device, including read-only get_status.
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<10))
 			if err != nil {
 				failure(w, 413, "请求过大或无法读取")
@@ -192,7 +210,12 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 			if id == "" && cfg.Mode == "mock" {
 				id = cfg.DeviceID
 			}
-			if id != cfg.DeviceID {
+			if manager != nil {
+				if err := manager.Touch(id, "mcp"); err != nil {
+					failure(w, 403, "未知设备")
+					return
+				}
+			} else if id != cfg.DeviceID {
 				failure(w, 403, "未知设备")
 				return
 			}
@@ -243,6 +266,23 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		}
 		mux.HandleFunc("GET /simulator", page)
 		mux.HandleFunc("GET /device", page)
+	}
+	if manager != nil {
+		assets, err := fs.Sub(devUI, "adminui")
+		if err != nil {
+			panic(err)
+		}
+		mux.Handle("GET /admin-assets/", http.StripPrefix("/admin-assets/", http.FileServer(http.FS(assets))))
+		page := func(w http.ResponseWriter, r *http.Request) {
+			data, err := devUI.ReadFile("adminui/index.html")
+			if err != nil {
+				http.Error(w, "missing embedded admin console", 500)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(data)
+		}
+		mux.HandleFunc("GET /admin", page)
 	}
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

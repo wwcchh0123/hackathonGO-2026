@@ -13,10 +13,8 @@ import (
 	"time"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
-	"github.com/wwcchh0123/hackathonGO-2026/internal/artifacts"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/config"
-	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
-	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/controlplane"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/transport/httpapi"
 )
 
@@ -44,8 +42,8 @@ func run() error {
 		validateCancel()
 		provider = httpProvider
 	}
-	controller := session.New(ctx, provider, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir, PublicURL: cfg.PublicURL})
-	srv := &http.Server{Addr: cfg.Addr, Handler: httpapi.Handler(cfg, controller), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
+	manager := controlplane.New(ctx, provider, cfg.DeviceID, cfg.DataDir, cfg.PublicURL)
+	srv := &http.Server{Addr: cfg.Addr, Handler: httpapi.HandlerWithManager(cfg, manager), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	stopped := make(chan error, 1)
 	go func() { stopped <- srv.ListenAndServe() }()
 	slog.Info("control service listening", "addr", cfg.Addr, "mode", cfg.Mode, "device", cfg.DeviceID)
@@ -57,7 +55,7 @@ func run() error {
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelShutdown()
 	shutdownErr := srv.Shutdown(shutdown)
-	controller.Wait()
+	manager.Wait()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

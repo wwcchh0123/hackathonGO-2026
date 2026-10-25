@@ -21,11 +21,11 @@
 | 请求头 | GET /mcp | POST /mcp/message |
 | --- | --- | --- |
 | Authorization: Bearer CONTROL_TOKEN | 校验，错误 401 | 校验，错误 401 |
-| X-Linx-Device-Id | 不要求、不绑定身份 | 必须等于 DEVICE_ID，否则 403；仅 mock 可省略 |
+| X-Linx-Device-Id | 不要求、不绑定身份 | 每次工具调用的设备身份；合法 ID 会登记并路由到该设备 controller；仅 mock 可省略并使用默认设备 |
 | X-Linx-Session-Id | 不用于调用身份 | 灵矽对话 ID，用于发送目标、日志和去重 |
 | X-Linx-Agent-Id | 不用于调用身份 | 仅日志 |
 
-MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOKEN 可为空以便本机演示；配置后所有 MCP HTTP 请求都必须带 Bearer。工具调用的身份以每次 POST 为准，工具参数不接受设备或会话 ID。`tools/call` 中缺失设备 ID 仅在 mock 模式兼容；显式传入不匹配的设备 ID 始终拒绝。
+MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOKEN 可为空以便本机演示；配置后所有 MCP HTTP 请求都必须带 Bearer。工具调用的身份以每次 POST 为准，工具参数不接受设备或会话 ID。`tools/call` 中缺失设备 ID 仅在 mock 模式兼容；显式传入非法设备 ID 拒绝，已登记设备之间互不共享内存任务引用和对话发送目标。
 
 ### 四个业务工具
 
@@ -151,6 +151,27 @@ data: {"id":"evt_...","type":"agent.message","content":[{"type":"text","text":"�
 展示页在每一轮会话进入 idle 后自动调用 `POST /display/preview`。这个接口只接受展示 URL 中的短期 `task_ref`，不需要控制令牌；服务端优先查找 `/mnt/session/outputs/index.html`，找不到时再选择其他 HTML 文件。接口返回 `available: false` 时展示页最多每 3 秒重试 4 次，仍没有 HTML 就保留事件时间线，不阻塞任务展示。找到结果后，页面在右侧隔离 iframe 中打开托管的静态页面，设备浏览器投屏的就是完整展示页。
 
 预览下载有界：单文件上限 10 MiB、总计 64 MiB、最多 100 个最新路径，扫描历史导出最多 500 条，预算 30 秒；任务代际改变时丢弃迟到发布，A 的预览不覆盖 B；最多同时下载 2 份，磁盘保留最近 32 份预览，已淘汰的本地链接通过详情失效后可重新请求。不会因没有 HTML 隐藏其他文件元信息。控制服务仍保留 `POST /api/tasks/{task_ref}/preview` 供受保护的显式调用，公开展示接口只用于设备页面的自动预览。
+
+## 中心设备管理链路
+
+control 进程通过 `internal/controlplane` 维护一个进程内设备注册表。启动时登记配置的 `DEVICE_ID`；带有合法 `X-Linx-Device-Id` 的受鉴权 MCP 工具请求会登记/刷新对应设备的 `last_seen`，并路由到该设备独立的内存 `session.Controller`。创建 AgentAPI Session 时写入 `metadata.device_id`，管理端按该字段过滤任务；默认设备还兼容没有此 metadata 的旧历史任务。设备注册、任务引用和在线判定不跨进程持久化。
+
+管理页和接口独立于设备展示选择，均为只读：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /admin` | 受控制服务访问令牌保护的中心管理页面 |
+| `GET /api/admin/bootstrap` | 管理页服务信息和默认设备 |
+| `GET /api/admin/overview` | 待处理设备/任务和设备数、在线数、运行任务数等聚合统计 |
+| `GET /api/admin/devices` | 设备列表、`first_seen` / `last_seen` / 来源、在线判定、快照和任务计数；支持 query/health/sort/limit/page |
+| `GET /api/admin/devices/{device_id}` | 单台设备摘要和当前快照 |
+| `GET /api/admin/devices/{device_id}/snapshot` | 指定设备快照 |
+| `GET /api/admin/devices/{device_id}/tasks` | 指定设备的任务分页，支持任务列表的状态/时间过滤 |
+| `GET /api/admin/devices/{device_id}/tasks/{task_ref}` | 指定设备任务详情，支持有界事件、文件 metadata 和命令查询参数 |
+| `GET /api/admin/tasks` | 跨设备任务列表；支持 query/device_id/status/limit/page，结果携带 device_id |
+| `GET /api/admin/tasks/{device_id}/{task_ref}` | 跨设备入口的任务详情，task_ref 必须和 device_id 一起使用 |
+
+管理端只使用 `CONTROL_TOKEN` 的 Bearer 或 HttpOnly `linxi_control` Cookie，不接触 AgentAPI Key、灵矽设备 token 或 MCP 凭据。查询设备/任务不会切换设备视图、不发送消息、不 interrupt、不下载预览；`online` 只代表最近窗口内收到过 control 请求，不代表硬件心跳。未知设备或不属于该设备的任务返回 404。
 
 ## 开发控制台
 

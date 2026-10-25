@@ -86,7 +86,12 @@ func TestPersistentBrowserReuseAndRestart(t *testing.T) {
 	}
 	b.cancel()
 	select {
-	case <-first:
+	case _, open := <-first:
+		// Other observers (ensureOpen and Stop) must still see completion
+		// after this waiter wakes; a consumable message leaves a race window.
+		if open {
+			t.Fatal("browser exit notification must be closed for every observer")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("fake browser did not stop")
 	}

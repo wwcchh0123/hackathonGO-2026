@@ -197,7 +197,7 @@ type browser struct {
 	debugPort int
 	url       string
 	cancel    context.CancelFunc
-	done      <-chan error
+	done      <-chan struct{}
 }
 
 func (b *browser) Open(parent context.Context, rawURL string) error {
@@ -231,8 +231,12 @@ func (b *browser) Open(parent context.Context, rawURL string) error {
 		cancel()
 		return fmt.Errorf("启动浏览器: %w", err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait(); close(done) }()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		// Closing broadcasts a persistent exit state to every observer.
+		close(done)
+	}()
 	b.mu.Lock()
 	b.cancel = cancel
 	b.done = done

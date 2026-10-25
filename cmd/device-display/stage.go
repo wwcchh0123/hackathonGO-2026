@@ -56,7 +56,7 @@ func (b *browser) ensureOpen(ctx context.Context, rawURL string) error {
 	if b.cancel != nil && b.url == rawURL {
 		select {
 		case <-b.done:
-			// Open closes done on exit, so Stop can still wait safely.
+			// Exit is broadcast by closing done; observing it never consumes it.
 		default:
 			b.mu.Unlock()
 			return nil

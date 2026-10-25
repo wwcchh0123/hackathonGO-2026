@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#191919">
   <title>CodeAgent · Linxi display</title>
-  <link rel="stylesheet" href="./styles.css?v=portal-4">
-  <script defer src="./app.js?v=portal-4"></script>
+  <link rel="stylesheet" href="./styles.css?v=portal-7">
+  <script defer src="./app.js?v=portal-7"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -42,6 +42,7 @@
     </aside>
 
     <main class="run-panel">
+      <div id="run-progress" class="run-progress" aria-hidden="true"></div>
       <header class="run-header">
         <div class="run-heading">
           <div class="run-kicker">SESSION <span>/</span> <code id="session-id">waiting</code></div>
@@ -54,6 +55,10 @@
         </div>
         <div class="run-header-meta">
           <span id="status-pill" class="status-pill"><i></i><span id="status">READY</span></span>
+          <span id="run-activity" class="run-activity" role="status" aria-live="polite" hidden>
+            <span class="run-activity-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span id="run-activity-text">EXECUTING</span>
+          </span>
           <time id="clock">--:--:--</time>
         </div>
       </header>
@@ -79,6 +84,10 @@
               <div class="empty-icon">✦</div>
               <strong>Choose a session to follow</strong>
               <span>The selected AgentAPI run will appear here.</span>
+            </div>
+            <div id="run-loader" class="run-loader" role="status" aria-live="polite" hidden>
+              <span class="run-loader-ring" aria-hidden="true"></span>
+              <span id="run-loader-label">Working…</span>
             </div>
           </section>
 

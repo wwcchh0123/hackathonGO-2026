@@ -170,10 +170,41 @@ code, time { font-family: var(--mono); }
 
 .run-panel {
   display: flex;
+  position: relative;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
   background: var(--background);
+}
+
+.run-progress {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease;
+}
+.run-progress::after {
+  display: block;
+  width: 34%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #72c48a, #c0f0cd, transparent);
+  box-shadow: 0 0 12px rgba(114, 196, 138, .75);
+  content: "";
+  transform: translateX(-120%);
+}
+.run-panel.running .run-progress { opacity: 1; }
+.run-panel.running .run-progress::after { animation: running-progress 1.6s ease-in-out infinite; }
+@keyframes running-progress {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
 }
 
 .run-content { display: flex; min-width: 0; min-height: 0; flex: 1; }
@@ -199,9 +230,20 @@ code, time { font-family: var(--mono); }
 .status-pill { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; letter-spacing: .03em; }
 .status-pill.live { color: var(--green); }
 .status-pill.live i { background: var(--green); }
+.status-pill.live i { animation: status-pulse 1.2s ease-in-out infinite; }
+@keyframes status-pulse {
+  0%, 100% { opacity: .45; box-shadow: 0 0 0 0 rgba(114, 196, 138, 0); }
+  50% { opacity: 1; box-shadow: 0 0 0 4px rgba(114, 196, 138, .12); }
+}
 .status-pill.done i { background: #8d8d8d; }
 .status-pill.error { color: #ef7d78; }
 .status-pill.error i { background: #ef7d78; }
+.run-activity { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font-size: 9px; letter-spacing: .08em; }
+.run-activity-dots { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; }
+.run-activity-dots i { display: block; width: 3px; height: 5px; border-radius: 2px; background: currentColor; animation: activity-bars .9s ease-in-out infinite; }
+.run-activity-dots i:nth-child(2) { height: 9px; animation-delay: -.3s; }
+.run-activity-dots i:nth-child(3) { height: 7px; animation-delay: -.6s; }
+@keyframes activity-bars { 0%, 100% { opacity: .35; transform: scaleY(.55); } 50% { opacity: 1; transform: scaleY(1); } }
 
 .run-meta-row {
   display: flex;
@@ -237,6 +279,10 @@ code, time { font-family: var(--mono); }
 
 .timeline-item { margin: 0 0 18px; animation: item-in .2s ease-out; }
 @keyframes item-in { from { opacity: .35; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+.run-loader { display: flex; align-items: center; justify-content: flex-start; gap: 9px; padding: 14px 0 30px 52px; color: var(--muted-dim); font-family: var(--mono); font-size: 9px; letter-spacing: .02em; }
+.run-loader-ring { display: inline-block; width: 17px; height: 17px; border: 2px solid rgba(114, 196, 138, .2); border-top-color: var(--green); border-right-color: var(--green); border-radius: 50%; animation: loader-spin .8s linear infinite; }
+@keyframes loader-spin { to { transform: rotate(360deg); } }
+.run-loader[hidden] { display: none; }
 
 .user-row { display: flex; justify-content: flex-end; }
 .user-message { max-width: 76%; padding: 12px 15px; border-radius: 16px 16px 4px 16px; background: #292929; color: #ededed; font-size: 14px; line-height: 1.65; }
@@ -275,6 +321,7 @@ code, time { font-family: var(--mono); }
 .work-progress { flex: none; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; }
 .work-status { display: grid; width: 14px; flex: none; place-items: center; color: var(--green); font-size: 13px; }
 .work-status.running { color: var(--muted-dim); }
+.run-panel.running .work-status.running { animation: status-pulse 1.2s ease-in-out infinite; }
 .work-status.error { color: var(--red); }
 .work-detail { display: none; margin: 2px 0 7px 27px; padding: 4px 0 3px 20px; border-left: 1px solid var(--border); }
 .work-block.expanded .work-detail { display: block; }
@@ -333,9 +380,11 @@ code, time { font-family: var(--mono); }
   .run-footer { padding-inline: 18px; }
   .run-footer span:nth-child(2) { display: none; }
   .user-message { max-width: 90%; }
+  .run-loader { padding-left: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .timeline-item { animation: none; }
   .work-chevron { transition: none; }
+  .run-panel.running .run-progress::after, .status-pill.live i, .run-activity-dots i, .run-panel.running .work-status.running, .run-loader-ring { animation: none; }
 }

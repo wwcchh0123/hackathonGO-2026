@@ -284,7 +284,7 @@ function applySelectedTask() {
   const task = state.selectedTask;
   const title = task ? taskTitle(task) : state.taskRef ? `Session ${state.taskRef.slice(-8)}` : 'Choose a session';
   $('stage-title').textContent = title;
-  $('session-id').textContent = task?.session_id ? task.session_id.slice(0, 18) : state.taskRef ? state.taskRef.slice(-18) : 'waiting';
+  $('session-id').textContent = state.taskRef ? state.taskRef.slice(-18) : 'waiting';
   $('runtime').textContent = runtimeLabel(task);
   if (task) setStatus(task.status);
   renderSessionList();
@@ -527,7 +527,6 @@ function applySnapshot(snapshot) {
     setStatus(snapshot.status, snapshot.stop_reason);
     if (state.selectedTask) state.selectedTask = { ...state.selectedTask, status: snapshot.status };
   }
-  if (snapshot.session_id) $('session-id').textContent = snapshot.session_id.slice(0, 18);
   if (snapshot.started_at) $('time-range').textContent = `${timeOf(snapshot.started_at)} — ${timeOf(snapshot.ended_at)}`;
   if (snapshot.result_url && state.status === 'idle') showPreview(snapshot.result_url);
   if (snapshot.status === 'idle') requestPreview();
@@ -537,10 +536,9 @@ function applyMeta(meta) {
   state.total = Number(meta.eventCount || 0);
   $('runtime').textContent = runtimeLabel(meta);
   $('source').textContent = meta.source || 'AgentAPI session events';
-  if (meta.sessionId) $('session-id').textContent = meta.sessionId.slice(0, 18);
   if (meta.startedAt) $('time-range').textContent = `${timeOf(meta.startedAt)} — ${timeOf(meta.endedAt)}`;
   if (meta.taskRef === state.taskRef && meta.title) {
-    state.selectedTask = { ...state.selectedTask, task_ref: meta.taskRef, title: meta.title, session_id: meta.sessionId, runtime: meta.runtime, model: meta.model, status: state.status };
+    state.selectedTask = { ...state.selectedTask, task_ref: meta.taskRef, title: meta.title, runtime: meta.runtime, model: meta.model, status: state.status };
     applySelectedTask();
   }
 }

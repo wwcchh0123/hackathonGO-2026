@@ -487,6 +487,7 @@ func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
 	if stream.StatusCode != http.StatusOK || stream.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("display stream: %d %q", stream.StatusCode, stream.Header.Get("Content-Type"))
 	}
+	var streamBody strings.Builder
 	reader := bufio.NewReader(stream.Body)
 	line, err := reader.ReadString('\n')
 	if err != nil || line != "event: device-snapshot\n" {
@@ -498,8 +499,13 @@ func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.HasPrefix(line, "data:") && strings.Contains(line, `"title":"展示测试"`) {
+			streamBody.WriteString(line)
+			if strings.Contains(streamBody.String(), `"sessionId"`) || strings.Contains(streamBody.String(), `"session_id"`) {
+				t.Fatal("public display stream leaked AgentAPI Session ID")
+			}
 			return
 		}
+		streamBody.WriteString(line)
 	}
 	t.Fatal("session metadata did not carry the explicit task title")
 }
@@ -579,5 +585,8 @@ func TestPublicDisplaySessionListIsReadOnlyAndUnprotected(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), "must-not-be-needed") || strings.Contains(res.Body.String(), "events") {
 		t.Fatalf("display session list leaked protected or event data: %s", res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), `"session_id"`) {
+		t.Fatalf("display session list leaked AgentAPI Session ID: %s", res.Body.String())
 	}
 }

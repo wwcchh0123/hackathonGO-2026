@@ -317,26 +317,59 @@ func displayEvents(c *session.Controller) http.Handler {
 			return
 		}
 		snapshot := displaySnapshot(d)
+		// /display is intentionally unauthenticated; keep the AgentAPI Session ID
+		// inside the controller and expose only the opaque task_ref/capability.
+		snapshot.SessionID = ""
 		if err := writeDisplayEvent(w, rc, "device-snapshot", "", snapshot); err != nil {
 			return
 		}
 		if err := writeDisplayEvent(w, rc, "session-meta", "", map[string]any{
-			"taskRef":   ref,
-			"sessionId": snapshot.SessionID,
-			"runtime":   d.Runtime,
-			"model":     d.Model,
-			"title":     d.Title,
-			"source":    "AgentAPI session event stream",
+			"taskRef": ref,
+			"runtime": d.Runtime,
+			"model":   d.Model,
+			"title":   d.Title,
+			"source":  "AgentAPI session event stream",
 		}); err != nil {
 			return
 		}
 		err = observation.Run(after, func(f events.Frame) error {
-			return writeDisplayEvent(w, rc, "session-event", f.ID, f.Data)
+			return writeDisplayEvent(w, rc, "session-event", f.ID, publicEventData(f.Data))
 		})
 		if err != nil && r.Context().Err() == nil {
 			slog.Debug("public display stream closed", "task_ref", ref, "error", err)
 		}
 	})
+}
+
+func publicEventData(raw json.RawMessage) json.RawMessage {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return raw
+	}
+	var scrub func(any) any
+	scrub = func(value any) any {
+		switch item := value.(type) {
+		case map[string]any:
+			for key := range item {
+				if key == "session_id" || key == "sessionId" {
+					delete(item, key)
+					continue
+				}
+				item[key] = scrub(item[key])
+			}
+		case []any:
+			for i := range item {
+				item[i] = scrub(item[i])
+			}
+		}
+		return value
+	}
+	value = scrub(value)
+	clean, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return clean
 }
 
 // displayPreview is the public, read-only display counterpart to the
@@ -391,7 +424,6 @@ func displaySessions(c *session.Controller) http.Handler {
 		for _, task := range page.Data {
 			items = append(items, displaySession{
 				TaskRef:   task.Ref,
-				SessionID: task.SessionID,
 				Title:     task.Title,
 				Status:    task.Status,
 				Runtime:   task.Runtime,
@@ -407,7 +439,6 @@ func displaySessions(c *session.Controller) http.Handler {
 
 type displaySession struct {
 	TaskRef   string         `json:"task_ref"`
-	SessionID string         `json:"session_id,omitempty"`
 	Title     string         `json:"title"`
 	Status    string         `json:"status"`
 	Runtime   string         `json:"runtime,omitempty"`

@@ -360,6 +360,14 @@ type devtoolsResponse struct {
 	Error  json.RawMessage `json:"error"`
 }
 
+const (
+	// A 1920x1080 PNG is often larger than the websocket package's 32 KiB
+	// default message limit. Keep the CDP response bounded while allowing the
+	// screenshot limit below to arrive as base64 JSON.
+	maxBrowserImageBytes = 8 << 20
+	cdpReadLimit         = 12 << 20
+)
+
 // Capture takes the same Chromium surface that the AirPlay sender mirrors.
 // Keeping this on the simulated device is intentional: the cloud can inspect
 // the device browser without receiving the browser's debugging endpoint.
@@ -381,7 +389,7 @@ func (b *browser) Capture(ctx context.Context) (devicecontrol.BrowserCapture, er
 	if err != nil || len(png) == 0 {
 		return devicecontrol.BrowserCapture{}, fmt.Errorf("浏览器返回了无效截图")
 	}
-	if len(png) > 8<<20 {
+	if len(png) > maxBrowserImageBytes {
 		return devicecontrol.BrowserCapture{}, fmt.Errorf("浏览器截图过大")
 	}
 	return devicecontrol.BrowserCapture{URL: target.URL, Title: target.Title, PNG: png}, nil
@@ -560,6 +568,7 @@ func (b *browser) command(ctx context.Context, target devtoolsTarget, id int, me
 		return err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "command complete")
+	conn.SetReadLimit(cdpReadLimit)
 	body, err := json.Marshal(map[string]any{"id": id, "method": method, "params": params})
 	if err != nil {
 		return err

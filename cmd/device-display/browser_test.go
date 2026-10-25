@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 func TestBrowserCDPInspectionCaptureAndClick(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string
+	capturePayload := bytes.Repeat([]byte("p"), 64<<10)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/json/list" {
@@ -60,7 +62,7 @@ func TestBrowserCDPInspectionCaptureAndClick(t *testing.T) {
 		switch request.Method {
 		case "Page.captureScreenshot":
 			response = map[string]any{"id": request.ID, "result": map[string]string{
-				"data": base64.StdEncoding.EncodeToString([]byte("png-data")),
+				"data": base64.StdEncoding.EncodeToString(capturePayload),
 			}}
 		case "Runtime.evaluate":
 			if strings.Contains(string(data), "scrollIntoView") {
@@ -93,7 +95,7 @@ func TestBrowserCDPInspectionCaptureAndClick(t *testing.T) {
 	defer cancel()
 
 	capture, err := b.Capture(ctx)
-	if err != nil || string(capture.PNG) != "png-data" || capture.URL == "" {
+	if err != nil || !bytes.Equal(capture.PNG, capturePayload) || capture.URL == "" {
 		t.Fatalf("capture: %#v %v", capture, err)
 	}
 	inspection, err := b.Inspect(ctx)

@@ -31,34 +31,35 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 | 工具 | 参数 | 行为 |
 | --- | --- | --- |
-| `list_tasks` | `limit`（默认 20，上限 50）、`page`、可选 `status/include_archived/created_after/created_before` | 查询当前配置 Agent 的单页任务和消息摘录；不会带入同一 API Key 下其他 Agent 的 session |
+| `list_tasks` | `limit`（默认 20，上限 50）、`page`、可选 `runtime/model/status/include_archived/created_after/created_before` | 合并可读 profile 的单页任务与摘要；禁止任意 Agent ID |
 | `get_task` | 必填 `task_ref`，可选 `command_id/events_limit/events_page/files_page` | 查询云端状态、本地命令结果、最近消息、停止原因、原始事件和文件元信息 |
-| `send_message` | `text`，可选 `task_ref` | 原话发送到指定任务；运行中先 interrupt，再轮询真实 Status 至 idle，最后在同 Session 发送 |
-| `new_task` | `text`，可选 `parent_task_ref` | 新建独立 Session 并发送首条需求；不停止其他任务。接力时附上实际可读取的消息/文件元信息及 parent_session_id |
+| `send_message` | `text`，可选 `task_ref/runtime/model` | 原话发送到指定任务；运行中先 interrupt，再轮询真实 Status 至 idle，最后在同 Session 发送 |
+| `new_task` | `text`，可选 `parent_task_ref/runtime/model` | 新建独立 Session 并发送首条需求；不停止其他任务。接力时附上实际可读取的消息/文件元信息及 parent_session_id |
 
 `text` 去首尾空白后为 1–2000 个 Unicode 字符。未知参数拒绝。不保留 `get_status/start_new_project` 别名，需同步更新灵矽工具配置。`get_task.events_limit` 默认 30，上限 100，设为 0 不附带普通事件；状态判断仍按需读取有限的控制事件。事件默认按尾部倒序查询、返回本页内正序，`events_next_page` 用于获取更早一页，历史页不更新当前状态。
 
-成功结果以 MCP `content[0].text` 中的 **JSON** 返回；不设置 `structuredContent/outputSchema`。灵矽读取 JSON 后生成一句口语回复，不朗读编号、JSON 或链接。业务拒绝为 `isError=true` 和简短原因。修改性工具只做有界内存受理，不等待上游，延迟目标仍为 P99 < 300 ms；查询会访问上游，单次读取预算默认 10 秒。
+成功结果以 MCP `content[0].text` 中的 **JSON** 返回；不设置 `structuredContent/outputSchema`。灵矽读取 JSON 后生成一句口语回复，不朗读编号、JSON 或链接。业务拒绝为 `isError=true` 和 JSON `{code,message,current,requested,next}`，HTTP 使用相同 code。运行时/模型不可用分别为 `runtime_unavailable/model_unavailable`；续聊切换分别为 `runtime_switch_required/model_switch_required`，能力不足为 `runtime_not_capable`，真实 Session 与固定配置不符为 `profile_inconsistent`。拒绝切换发生在 interrupt/send/create 前。修改性工具只做有界内存受理，不等待上游，延迟目标仍为 P99 < 300 ms；查询会访问上游，单次读取预算默认 10 秒。
 
 配置 `PUBLIC_URL` 后，`new_task`、`send_message` 和 `get_task` 的 JSON 结果附带 `display_url`。这是按 `task_ref` 绑定的公开只读展示页，灵矽 Agent 必须把完整值原样传给独立设备 MCP 的 `cast_screen`。当 `PUBLIC_URL` 使用 `*.ngrok-free.dev`、`*.ngrok.app` 或 `*.ngrok.io` 时，服务自动附加 `ngrok-skip-browser-warning=true`；模拟设备 Chromium 同时使用非标准 User-Agent `LinxiDevice/0.1`，避免后续资源请求再次进入 ngrok 提示页；可通过 `BROWSER_USER_AGENT` 覆盖。创建任务是异步的，设备可以先打开地址；展示页会在云端 Session 建立后自动重连。`display_url` 不包含 AgentAPI Key、CONTROL_TOKEN 或灵矽身份。
 
 ```json
-{"accepted":true,"message":"已受理，请查询任务确认提交和执行结果","task_ref":"task_...","command_id":"cmd_..."}
+{"accepted":true,"message":"已受理，请查询任务确认提交和执行结果","task_ref":"task_...","command_id":"cmd_...","runtime":"codex","model":{"id":"<allowlisted-model>","effort":"high"}}
 ```
 
-受理不表示发送或执行成功。`get_task.command` 与云端 `status` 分别呈现：命令状态为 `queued/submitting/confirmed/failed/unknown`；`phase` 表示 checking/interrupt/create/send/created，附 error、input_event_id 和时间。`confirmed` 仅证明需求已被上游接受，不代表任务完成。通过 `command_id` 查询旧命令；每个引用最多保留 32 条记录，未决记录不被静默覆盖。
+受理不表示发送或执行成功。`get_task.command` 与云端 `status` 分别呈现：命令状态为 `queued/submitting/confirmed/failed/unknown`；`phase` 表示 checking/interrupt/create/send/created，附 error/error_code/error_detail、input_event_id 和时间。`confirmed` 仅证明需求已被上游接受，不代表任务完成。通过 `command_id` 查询旧命令；每个引用最多保留 32 条记录，未决记录不被静默覆盖。
 
 `task_ref` 是进程内随机引用，空闲有效期 30 分钟，成功访问/重新列出可刷新引用，实时观察连接持有期间保留引用；最多保留 256 个引用。过期/重启后旧引用失效，必须重新列出，绝不把旧引用重新分配给其他 Session。`new_task` 在创建前就返回引用；创建失败或未知仍能查询。新建失败不因后续 send_message 自动再次创建。
 
 省略发送引用时，只能复用同一非空 `X-Linx-Session-Id` 最近一次明确新建或发送的任务；新对话、缺失对话头、引用失效时拒绝猜测。列表、详情、展示选择均不改变发送目标。入队即固定目标，设备切屏不会改写队列里的目标。
 
-同一非空灵矽对话、工具、目标引用和规范化 text，在首次受理后五秒内返回同一回执；`new_task` 在分配新引用前去重。无对话头不去重；去重缓存和对话发送目标各最多 1024 条。Create/Send 结果未知时，只做有限的 metadata/输入事件回查，不重发。未核对的旧写入阻止同任务后续写入；其他任务仍可执行。找回创建的 Session 时，明确报告“首条需求尚未发送”，由用户明确继续。本期不提供跨进程恰好一次投递。
+同一非空灵矽对话、工具、目标引用、profile/runtime/model/effort 和规范化 text，在首次受理后五秒内返回同一回执；`new_task` 在分配新引用前去重。无对话头不去重；去重缓存和对话发送目标各最多 1024 条。Create/Send 结果未知时，只做有限的 metadata/输入事件回查，不重发。未核对的旧写入阻止同任务后续写入；其他任务仍可执行。找回创建的 Session 时，明确报告“首条需求尚未发送”，由用户明确继续。本期不提供跨进程恰好一次投递。
 
 ### 查询字段与停止原因
 
-`list_tasks` 返回 `data/next_page/has_more/sort/scope/queried_at/filters/partial`。当前公共上游只支持创建时间倒序，`sort=created_at_desc`，不能称为全局最近活跃。`scope=current_configured_agent`；服务端始终使用 `AGENTAPI_AGENT_ID` 过滤，不允许调用方切换到同一 API Key 下的其他 Agent。时间过滤使用 RFC3339，分别对应 created_at[gte/lte]。不支持自然语言检索或无限翻页。
+`list_tasks` 返回 `data/next_page/has_more/sort/scope/queried_at/filters/partial/complete/errors`。生产 `scope=runtime_profiles`，按 `created_at desc, session_id desc, runtime` 稳定合并；`sort=created_at_desc`，不能称为最近活跃。每个 profile 固定 Agent ID/version/environment，不接受调用方 Agent ID。可按 runtime 和 `model:{id,effort}` 过滤；HTTP 对应 `runtime/model/effort` 查询参数。时间过滤为 RFC3339，对应 created_at[gte/lte]。
 
-任务卡片含 task_ref、标题、创建/更新时间、原始状态、archived、runtime、can_continue 和 continue_reason。summary 只来自最近非空 agent.message 的多文本块合并摘录（上限 400 字），带来源 event_id 和消息原时间；每次最多检查最近 8 条 Agent 消息，尚有更早候选时以 summary_unavailable 标记不完整。列表并发至多 4，单项摘要失败保留其他任务并标记 partial。旧摘要不表示新轮次已完成，工具/错误事件不覆盖摘录。
+游标是短随机引用与 HMAC 签名，不携带任务正文；服务端保存压缩的不可变分页快照，包括首次查询 snapshot、各 profile 上游游标/有界 lookahead、完整配置 generation、查询 fingerprint（含设备）和到期时间。每个控制器最多缓存 256 个快照、压缩数据总计 8 MiB，单快照原文最多 2 MiB；最长保留 10 分钟，超限淘汰最旧快照。调用方不得解析或改写游标，缓存丢失/淘汰或进程重启后需重新查询第一页。签名密钥在进程内随机生成。篡改、过期、查询或配置不匹配返回 409，重新查询第一页。`complete` 表示本页全部 profile 查询完整，是否还有任务另看 `has_more`。任一 profile 查询失败返回 `partial=true,complete=false,errors:[{runtime,code,retryable}]`，所有可读 profile 的首次查询并发启动（最多 16 个），单项超时保留其他 profile 已读取的结果，并停止返回 next_page。摘要失败只标记对应 summary_unavailable。
+任务卡片含 task_ref、标题、创建/更新时间、原始状态、archived、runtime、model、parent_task_ref、can_continue 和 continue_reason。summary 只来自最近非空 agent.message 的多文本块合并摘录（上限 400 字），带来源 event_id 和消息原时间；每次最多检查最近 8 条 Agent 消息，尚有更早候选时以 summary_unavailable 标记不完整。单项摘要失败保留其他任务并标记 summary_unavailable。旧摘要不表示新轮次已完成，工具/错误事件不覆盖摘录。
 
 `get_task` 额外含 queried_at、stop_reason、messages、events、事件分页、files（单页最多 50 个元信息）、files_unavailable、command、可选 result_url。没有本地预览 URL 不代表没有云端产物。详情不透传内部 Agent 配置、资源认证数据或 Vault 凭据。
 
@@ -72,7 +73,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 | terminated | 原环境无法继续，需明确新建或接力 |
 | archived | 与状态独立；首版禁止直接发送 |
 
-仅兼容 claudecode 的历史任务可继续；不因默认 Agent 版本变化自动换 Session。sandbox 丢失不能恢复未提交文件。列表消息摘录不是独立的 GitHub 成功证明。
+三类 runtime 的历史任务均按不可变 profile binding 继续；不因默认 Agent/version/model 变化自动换 Session。sandbox 丢失不能恢复未提交文件。列表消息摘录不是独立的 GitHub 成功证明。
 
 ## 灵矽配置与部署
 
@@ -252,3 +253,11 @@ ready 的 sample_rate 是返回音频采样率；桥按云端 hello 的参数解
 浏览器默认将人物动作提前 120 ms，以补偿 AirPlay 画面延迟；可在语音页面“画面与声音同步”中调节 0～400 ms。它是音量驱动的二维动画，不是音素口型。声音仍在 Mac 浏览器播放；当前按钮唤醒不包含持续唤醒词检测。
 
 `device-display` 设置 `DEVICE_STAGE_URL=http://127.0.0.1:8090/stage/` 后启用常驻页面模式：启动时等待 voice 就绪并开始投屏，`cast_screen` 更新人物页中的内容区域，`scroll_screen` 继续向页面中央发送滚轮，`stop_cast` 关闭浏览器及 AirPlay，下一次本地唤醒可重新打开。设备另外在容器回环 `127.0.0.1:8788` 提供 `POST /wake`，只接受回环请求、不带 Origin、携带 `X-Linxi-Device: 1`；该端口不发布、不挂到公网 MCP 路径。voice 用 `DEVICE_WAKE_URL=http://127.0.0.1:8788/wake` 调用它。未设置 `DEVICE_STAGE_URL` 时沿用原有直接打开任务 URL 的行为，云端 MCP 工具名称和参数不变。
+
+## Runtime/model 绑定与接力
+
+Profile Registry 启动后只读，配置见 [部署说明](deploy.md#runtime-profiles)。每个任务固定 profile、Agent ID/version、Session ID、实际 model/effort 和 Provider；status、续聊、interrupt、events/SSE、summary、files、preview、unknown 回查均沿此绑定。Receipt 的 runtime/model 表示选定配置；真实值看 get_task。公开 Task 不返回内部 Session ID、profile key、Agent 配置或凭据；原始事件保持上游 JSON，设备展示仍可使用受控 Session 标识。
+
+新建先以固定版本创建，再核对实际 Agent/runtime/model/environment；不一致保留已创建 Session、命令标为 failed/profile_inconsistent，不重建或重发。同任务续聊先检查 binding，再执行 status → 必要时 interrupt → 轮询权威 idle → user.message。idle 不等于成功，仍按 stop_reason 判断。
+
+接力始终创建新 Session，返回 parent_task_ref。仅引用父任务实际可读的最近消息和最多 50 条文件元信息，消息按时间正序，JSON 引用整体不超过 12,000 个 Unicode 字符；超限标记 truncated。引用以不可信历史边界包裹，转义分隔符字符，不作为控制指令，不复制工作区或未提交文件。metadata 记录 parent_session_id/parent_runtime/parent_model/context_hash。

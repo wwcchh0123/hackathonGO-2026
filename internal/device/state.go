@@ -11,7 +11,7 @@ type Snapshot struct {
 	TaskRef        string     `json:"task_ref,omitempty"`
 	CommandID      string     `json:"command_id,omitempty"`
 	CommandState   string     `json:"command_state,omitempty"`
-	SessionID      string     `json:"session_id"`
+	SessionID      string     `json:"session_id,omitempty"`
 	Status         string     `json:"status"`
 	Summary        string     `json:"summary"`
 	SummaryEventID string     `json:"summary_event_id,omitempty"`

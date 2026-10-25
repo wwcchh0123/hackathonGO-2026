@@ -161,7 +161,7 @@ func handler(cfg config.Config, c *session.Controller, manager *controlplane.Man
 			}
 			receipt, err := c.Submit(cmd)
 			if err != nil {
-				failure(w, 400, err.Error())
+				failureError(w, 400, err)
 				return
 			}
 			JSON(w, 202, receipt)
@@ -317,25 +317,59 @@ func displayEvents(c *session.Controller) http.Handler {
 			return
 		}
 		snapshot := displaySnapshot(d)
+		// /display is intentionally unauthenticated; keep the AgentAPI Session ID
+		// inside the controller and expose only the opaque task_ref/capability.
+		snapshot.SessionID = ""
 		if err := writeDisplayEvent(w, rc, "device-snapshot", "", snapshot); err != nil {
 			return
 		}
 		if err := writeDisplayEvent(w, rc, "session-meta", "", map[string]any{
-			"taskRef":   ref,
-			"sessionId": snapshot.SessionID,
-			"runtime":   d.Runtime,
-			"title":     d.Title,
-			"source":    "AgentAPI session event stream",
+			"taskRef": ref,
+			"runtime": d.Runtime,
+			"model":   d.Model,
+			"title":   d.Title,
+			"source":  "AgentAPI session event stream",
 		}); err != nil {
 			return
 		}
 		err = observation.Run(after, func(f events.Frame) error {
-			return writeDisplayEvent(w, rc, "session-event", f.ID, f.Data)
+			return writeDisplayEvent(w, rc, "session-event", f.ID, publicEventData(f.Data))
 		})
 		if err != nil && r.Context().Err() == nil {
 			slog.Debug("public display stream closed", "task_ref", ref, "error", err)
 		}
 	})
+}
+
+func publicEventData(raw json.RawMessage) json.RawMessage {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return raw
+	}
+	var scrub func(any) any
+	scrub = func(value any) any {
+		switch item := value.(type) {
+		case map[string]any:
+			for key := range item {
+				if key == "session_id" || key == "sessionId" {
+					delete(item, key)
+					continue
+				}
+				item[key] = scrub(item[key])
+			}
+		case []any:
+			for i := range item {
+				item[i] = scrub(item[i])
+			}
+		}
+		return value
+	}
+	value = scrub(value)
+	clean, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return clean
 }
 
 // displayPreview is the public, read-only display counterpart to the
@@ -390,35 +424,38 @@ func displaySessions(c *session.Controller) http.Handler {
 		for _, task := range page.Data {
 			items = append(items, displaySession{
 				TaskRef:   task.Ref,
-				SessionID: task.SessionID,
 				Title:     task.Title,
 				Status:    task.Status,
 				Runtime:   task.Runtime,
+				Model:     task.Model,
 				CreatedAt: task.CreatedAt,
 				UpdatedAt: task.UpdatedAt,
 				Archived:  task.Archived,
 			})
 		}
-		JSON(w, http.StatusOK, displaySessionPage{Data: items, HasMore: page.HasMore, NextPage: page.NextPage, QueriedAt: page.QueriedAt})
+		JSON(w, http.StatusOK, displaySessionPage{Data: items, HasMore: page.HasMore, NextPage: page.NextPage, QueriedAt: page.QueriedAt, Partial: page.Partial, Complete: page.Complete, Errors: page.Errors})
 	})
 }
 
 type displaySession struct {
-	TaskRef   string    `json:"task_ref"`
-	SessionID string    `json:"session_id,omitempty"`
-	Title     string    `json:"title"`
-	Status    string    `json:"status"`
-	Runtime   string    `json:"runtime,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Archived  bool      `json:"archived,omitempty"`
+	TaskRef   string         `json:"task_ref"`
+	Title     string         `json:"title"`
+	Status    string         `json:"status"`
+	Runtime   string         `json:"runtime,omitempty"`
+	Model     agentapi.Model `json:"model"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Archived  bool           `json:"archived,omitempty"`
 }
 
 type displaySessionPage struct {
-	Data      []displaySession `json:"data"`
-	NextPage  string           `json:"next_page,omitempty"`
-	HasMore   bool             `json:"has_more"`
-	QueriedAt time.Time        `json:"queried_at"`
+	Data      []displaySession    `json:"data"`
+	Partial   bool                `json:"partial"`
+	Complete  bool                `json:"complete"`
+	Errors    []session.TaskError `json:"errors,omitempty"`
+	NextPage  string              `json:"next_page,omitempty"`
+	HasMore   bool                `json:"has_more"`
+	QueriedAt time.Time           `json:"queried_at"`
 }
 
 func displaySnapshot(d session.Detail) device.Snapshot {

@@ -18,6 +18,7 @@ var ErrCursorExpired = errors.New("事件游标已离开有界窗口，请重新
 type Observation struct {
 	c              *Controller
 	ref, id        string
+	provider       agentapi.Provider
 	initial        []events.Frame
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -33,15 +34,26 @@ func (c *Controller) Observe(ctx context.Context, ref, after string) (*Observati
 	if err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	task := c.tasks[ref]
+	binding, bindingOK := c.bindingForTaskLocked(task)
+	c.mu.Unlock()
+	if !bindingOK || binding.Provider == nil {
+		return nil, business("runtime_unavailable", "", "", "re-list tasks")
+	}
+	if !binding.Profile.Capabilities.Events {
+		return nil, business("runtime_not_capable", binding.Profile.Runtime, "events", "query task status instead")
+	}
+	provider := binding.Provider
 	select {
 	case c.observing <- struct{}{}:
 	default:
 		return nil, errors.New("实时观察连接已达上限")
 	}
 	queryCtx, done := context.WithTimeout(ctx, c.options.RequestTimeout)
-	page, err := c.Provider.ListEvents(queryCtx, s.ID, agentapi.EventQuery{Limit: 100, Order: "desc"})
+	page, err := provider.ListEvents(queryCtx, s.ID, agentapi.EventQuery{Limit: 100, Order: "desc"})
 	if err == nil {
-		s, err = c.status(queryCtx, s.ID)
+		s, err = c.statusWith(queryCtx, provider, s.ID)
 	}
 	done()
 	if err != nil {
@@ -101,7 +113,7 @@ func (c *Controller) Observe(ctx context.Context, ref, after string) (*Observati
 		})
 	}
 	c.mu.Unlock()
-	o := &Observation{c: c, ref: ref, id: s.ID, initial: initial, ctx: streamCtx, cancel: cancel, viewGeneration: generation}
+	o := &Observation{c: c, ref: ref, id: s.ID, provider: provider, initial: initial, ctx: streamCtx, cancel: cancel, viewGeneration: generation}
 	o.stopService = context.AfterFunc(c.ctx, cancel)
 	return o, nil
 }
@@ -166,7 +178,7 @@ func (o *Observation) Run(after string, emit func(events.Frame) error) error {
 			timer.Stop()
 		}
 		var consumerErr error
-		err := o.c.Provider.Stream(streamCtx, o.id, func(f events.Frame) error {
+		err := o.provider.Stream(streamCtx, o.id, func(f events.Frame) error {
 			if f.ID == "" || strings.ContainsAny(f.ID, "\r\n") || len(f.Data) > 8<<20 {
 				return errors.New("无效或过大的上游事件")
 			}
@@ -235,7 +247,14 @@ func (c *Controller) reduceView(ctx context.Context, ref string, generation uint
 		status = s.Status
 		if status == "idle" {
 			queryCtx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
-			tail, err := c.Provider.ListEvents(queryCtx, s.ID, agentapi.EventQuery{Limit: 64, Order: "desc", Types: []string{"user.message", "session.status_idle"}})
+			c.mu.Lock()
+			binding, ok := c.bindingForTaskLocked(c.tasks[ref])
+			c.mu.Unlock()
+			if !ok || binding.Provider == nil {
+				cancel()
+				return
+			}
+			tail, err := binding.Provider.ListEvents(queryCtx, s.ID, agentapi.EventQuery{Limit: 64, Order: "desc", Types: []string{"user.message", "session.status_idle"}})
 			cancel()
 			if err == nil {
 				reason = stopReason(status, tail.Data)

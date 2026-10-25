@@ -9,18 +9,28 @@ import (
 )
 
 type Session struct {
-	ID         string            `json:"id"`
-	Status     string            `json:"status"`
-	Title      string            `json:"title"`
-	Runtime    string            `json:"runtime"`
-	ArchivedAt *time.Time        `json:"archived_at,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
-	UpdatedAt  time.Time         `json:"updated_at"`
-	Metadata   map[string]string `json:"-"`
+	ID            string            `json:"id"`
+	Status        string            `json:"status"`
+	Title         string            `json:"title"`
+	Runtime       string            `json:"runtime"`
+	AgentID       string            `json:"agent_id,omitempty"`
+	AgentVersion  int               `json:"agent_version,omitempty"`
+	EnvironmentID string            `json:"environment_id,omitempty"`
+	Model         Model             `json:"model,omitempty"`
+	ArchivedAt    *time.Time        `json:"archived_at,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	Metadata      map[string]string `json:"-"`
+}
+
+type Model struct {
+	ID     string `json:"id,omitempty"`
+	Effort string `json:"effort,omitempty"`
 }
 type NewSession struct {
 	Title    string
 	Metadata map[string]string
+	Model    Model
 }
 type SessionQuery struct {
 	Limit                       int

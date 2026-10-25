@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
 )
 
@@ -23,6 +24,14 @@ type identity struct{ device, conversation, agent string }
 
 func textResult(text string, failed bool) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}, IsError: failed}
+}
+func errorResult(err error) *mcp.CallToolResult {
+	value := session.ErrorResponse(err)
+	raw, marshalErr := json.Marshal(value)
+	if marshalErr != nil {
+		return textResult(`{"code":"request_failed"}`, true)
+	}
+	return textResult(string(raw), true)
 }
 func decodeArgs(raw json.RawMessage, target any) error {
 	if len(raw) == 0 {
@@ -50,16 +59,17 @@ func HandlerFor(resolve func(string) *session.Controller, publicURL string) http
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}
 	ref := map[string]any{"type": "string", "minLength": 1, "maxLength": 100}
 	str := map[string]any{"type": "string", "maxLength": 512}
+	model := map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "xhigh", "max"}}}, "required": []string{"id"}, "additionalProperties": false}
 	schemas := map[string]map[string]any{
-		"new_task":     {"text": text, "parent_task_ref": ref},
-		"send_message": {"text": text, "task_ref": ref},
-		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": str, "agent_id": str, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
+		"new_task":     {"text": text, "runtime": str, "model": model, "parent_task_ref": ref},
+		"send_message": {"text": text, "task_ref": ref, "runtime": str, "model": model},
+		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": map[string]any{"type": "string", "maxLength": 32768}, "runtime": str, "model": model, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
 		"get_task":     {"task_ref": ref, "command_id": str, "events_limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "events_page": str, "files_page": str},
 	}
 	descriptions := map[string]string{
-		"new_task":     "明确新建独立任务；不停止其他任务。返回 task_ref、command_id 和可直接投屏的 display_url，accepted 仅表示已入队。接力历史任务时明确传 parent_task_ref。",
-		"send_message": "向明确的 task_ref 原话发送需求、修改、继续或暂停。省略引用仅复用同一灵矽对话最近一次写入目标；查询不改变目标。返回异步回执和 display_url，请用 get_task 核对 command_id。",
-		"list_tasks":   "只读查询当前配置 Agent 的任务；不会返回同一 API Key 下其他 Agent 的 session。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
+		"new_task":     "明确新建独立任务；runtime 可选 claudecode/codex/native，model 只能来自已配置 allowlist。runtime/model 改变必须 new_task，可传 parent_task_ref 接力。不停止其他任务。返回 task_ref、command_id 和可直接投屏的 display_url，accepted 仅表示已入队。接力历史任务时明确传 parent_task_ref。",
+		"send_message": "runtime/model 仅校验与原任务一致，不切换运行时。向明确的 task_ref 原话发送需求、修改、继续或暂停。省略引用仅复用同一灵矽对话最近一次写入目标；查询不改变目标。返回异步回执和 display_url，请用 get_task 核对 command_id。",
+		"list_tasks":   "只读合并所有可读 runtime profile 的任务，可按 runtime/model 过滤；partial=true 时说明部分 runtime 不可查询，不能声称完整。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
 		"get_task":     "只读任务详情，包含云端状态、命令结果、消息时间、停止原因、事件、文件元信息和可投屏 display_url。events_limit=0 只查状态和消息，不建事件流、不切屏、不下载预览。旧摘要不是本轮完成证明。",
 	}
 	for _, name := range []string{"list_tasks", "get_task", "send_message", "new_task"} {
@@ -103,9 +113,11 @@ func HandlerFor(resolve func(string) *session.Controller, publicURL string) http
 				}
 			default:
 				var in struct {
-					Text      string `json:"text"`
-					TaskRef   string `json:"task_ref,omitempty"`
-					ParentRef string `json:"parent_task_ref,omitempty"`
+					Text      string         `json:"text"`
+					TaskRef   string         `json:"task_ref,omitempty"`
+					ParentRef string         `json:"parent_task_ref,omitempty"`
+					Runtime   string         `json:"runtime,omitempty"`
+					Model     agentapi.Model `json:"model,omitempty"`
 				}
 				err = decodeArgs(r.Params.Arguments, &in)
 				if err == nil {
@@ -120,14 +132,14 @@ func HandlerFor(resolve func(string) *session.Controller, publicURL string) http
 						if controller == nil {
 							err = fmt.Errorf("未知设备")
 						} else {
-							value, err = controller.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Source: "mcp", ConversationID: who.conversation})
+							value, err = controller.Submit(session.Command{Action: action, Prompt: in.Text, TaskRef: in.TaskRef, ParentRef: in.ParentRef, Runtime: in.Runtime, Model: in.Model, Source: "mcp", ConversationID: who.conversation})
 						}
 					}
 				}
 			}
 			slog.Info("MCP tool call", "tool", name, "device_id", who.device, "linx_session_id", who.conversation, "linx_agent_id", who.agent, "is_error", err != nil, "duration_ms", time.Since(started).Milliseconds())
 			if err != nil {
-				return textResult(err.Error(), true), nil
+				return errorResult(err), nil
 			}
 			raw, err := json.Marshal(withDisplayURL(value, publicURL))
 			if err != nil {

@@ -54,13 +54,54 @@ func adminDetailOptions(r *http.Request) (session.DetailOptions, error) {
 	return o, nil
 }
 
+func adminDeviceListOptions(r *http.Request) controlplane.DeviceListOptions {
+	q := r.URL.Query()
+	return controlplane.DeviceListOptions{Query: q.Get("query"), Health: q.Get("health"), Sort: q.Get("sort"), Limit: atoiOrZero(q.Get("limit")), Page: q.Get("page")}
+}
+
+func adminTaskListOptions(r *http.Request) controlplane.TaskListOptions {
+	q := r.URL.Query()
+	return controlplane.TaskListOptions{Query: q.Get("query"), DeviceID: q.Get("device_id"), Status: q.Get("status"), Limit: atoiOrZero(q.Get("limit")), Page: q.Get("page")}
+}
+
+func atoiOrZero(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
 func adminAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler, manager *controlplane.Manager) {
 	mux.Handle("GET /api/admin/bootstrap", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		JSON(w, http.StatusOK, map[string]any{"service": "linxi-control", "admin": true, "default_device_id": manager.DefaultController().State.Get().DeviceID, "queried_at": time.Now().UTC()})
 	})))
+	mux.Handle("GET /api/admin/overview", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dashboard, err := manager.DashboardQuery(r.Context(), r.URL.Query().Get("query"))
+		if err != nil {
+			adminFailure(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, dashboard)
+	})))
 	mux.Handle("GET /api/admin/devices", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data, queriedAt := manager.ListDevices(r.Context())
-		JSON(w, http.StatusOK, map[string]any{"data": data, "queried_at": queriedAt})
+		page, err := manager.ListDeviceViews(r.Context(), adminDeviceListOptions(r))
+		if err != nil {
+			adminFailure(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, page)
+	})))
+	mux.Handle("GET /api/admin/devices/{device_id}", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		device, err := manager.Overview(r.Context(), r.PathValue("device_id"))
+		if err != nil {
+			adminFailure(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, map[string]any{"device": device, "queried_at": time.Now().UTC()})
 	})))
 	mux.Handle("GET /api/admin/devices/{device_id}/snapshot", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		snapshot, err := manager.Snapshot(r.PathValue("device_id"))
@@ -84,6 +125,27 @@ func adminAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler, manag
 		JSON(w, http.StatusOK, map[string]any{"device_id": r.PathValue("device_id"), "tasks": page})
 	})))
 	mux.Handle("GET /api/admin/devices/{device_id}/tasks/{ref}", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		o, err := adminDetailOptions(r)
+		if err != nil {
+			adminFailure(w, err)
+			return
+		}
+		detail, err := manager.GetTask(r.Context(), r.PathValue("device_id"), r.PathValue("ref"), o)
+		if err != nil {
+			adminFailure(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, map[string]any{"device_id": r.PathValue("device_id"), "task": detail})
+	})))
+	mux.Handle("GET /api/admin/tasks", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := manager.ListAdminTasks(r.Context(), adminTaskListOptions(r))
+		if err != nil {
+			adminFailure(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, page)
+	})))
+	mux.Handle("GET /api/admin/tasks/{device_id}/{ref}", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		o, err := adminDetailOptions(r)
 		if err != nil {
 			adminFailure(w, err)

@@ -13,12 +13,17 @@
       <form id="connect"><input id="token" type="password" aria-label="控制服务访问令牌" autocomplete="current-password" /><button>连接</button></form>
     </section>
     <div class="app" id="app" hidden>
-      <header><div><span class="mark">✳</span><strong>CONTROL CENTER</strong><small>设备管理与任务观测</small></div><div class="actions"><span id="queried"></span><button id="refresh">刷新</button></div></header>
+      <header>
+        <div><span class="mark">✳</span><strong>CONTROL CENTER</strong></div>
+        <div class="actions"><span id="queried"></span><button id="refresh">刷新</button></div>
+      </header>
       <main>
-        <section class="hero"><div><span class="eyebrow">中心服务 · 只读排查</span><h1>设备与任务</h1><p>查看控制面触达、当前快照和 AgentAPI 任务归属。在线表示最近收到过受鉴权请求。</p></div><div class="badge" id="mode">CONTROL</div></section>
+        <section class="hero"><h1>设备与任务</h1><div class="badge" id="mode">CONTROL</div></section>
+        <section class="stats" id="stats"></section>
+        <nav class="nav" aria-label="管理视图"><button data-view="attention" class="active">待处理</button><button data-view="devices">设备</button><button data-view="tasks">任务</button></nav>
+        <form class="toolbar" id="search-form"><label><span>全局搜索</span><input id="query" placeholder="设备 ID、task_ref、session_id 或标题" autocomplete="off" /></label><label id="status-filter" hidden><span>任务状态</span><select id="status"><option value="">全部状态</option><option value="running">运行中</option><option value="idle">空闲</option><option value="rescheduling">排队中</option><option value="terminated">已终止</option></select></label><button>搜索</button></form>
         <div class="error" id="error" role="alert" hidden></div>
-        <section class="devices"><div class="section-head"><h2>设备</h2><span id="device-count"></span></div><div id="device-list" class="device-list"></div></section>
-        <section class="tasks"><div class="section-head"><h2 id="task-title">任务</h2><span id="task-count"></span></div><div class="task-layout"><div id="task-list" class="task-list"></div><article id="detail" class="detail"><p class="empty">选择一台设备和任务查看详情。</p></article></div></section>
+        <section class="workspace"><div class="list-pane" id="list-pane"></div><article class="detail" id="detail"><p class="empty">选择设备或任务查看详情。</p></article></section>
       </main>
     </div>
     <script src="/admin-assets/app.js"></script>

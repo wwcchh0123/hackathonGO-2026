@@ -149,10 +149,14 @@ control 进程通过 `internal/controlplane` 维护一个进程内设备注册�
 | --- | --- |
 | `GET /admin` | 受控制服务访问令牌保护的中心管理页面 |
 | `GET /api/admin/bootstrap` | 管理页服务信息和默认设备 |
-| `GET /api/admin/devices` | 设备列表、`first_seen` / `last_seen` / 来源、在线判定、快照和任务计数；单台任务查询失败通过 `tasks_error` 返回 |
+| `GET /api/admin/overview` | 待处理设备/任务和设备数、在线数、运行任务数等聚合统计 |
+| `GET /api/admin/devices` | 设备列表、`first_seen` / `last_seen` / 来源、在线判定、快照和任务计数；支持 query/health/sort/limit/page |
+| `GET /api/admin/devices/{device_id}` | 单台设备摘要和当前快照 |
 | `GET /api/admin/devices/{device_id}/snapshot` | 指定设备快照 |
 | `GET /api/admin/devices/{device_id}/tasks` | 指定设备的任务分页，支持任务列表的状态/时间过滤 |
 | `GET /api/admin/devices/{device_id}/tasks/{task_ref}` | 指定设备任务详情，支持有界事件、文件 metadata 和命令查询参数 |
+| `GET /api/admin/tasks` | 跨设备任务列表；支持 query/device_id/status/limit/page，结果携带 device_id |
+| `GET /api/admin/tasks/{device_id}/{task_ref}` | 跨设备入口的任务详情，task_ref 必须和 device_id 一起使用 |
 
 管理端只使用 `CONTROL_TOKEN` 的 Bearer 或 HttpOnly `linxi_control` Cookie，不接触 AgentAPI Key、灵矽设备 token 或 MCP 凭据。查询设备/任务不会切换设备视图、不发送消息、不 interrupt、不下载预览；`online` 只代表最近窗口内收到过 control 请求，不代表硬件心跳。未知设备或不属于该设备的任务返回 404。
 

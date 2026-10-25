@@ -33,7 +33,7 @@ make dev
 
 - [模拟控制台](http://localhost:8080/simulator)：列出任务、选择消息目标、新建独立任务；展示目标单独选择。
 - [模拟设备页](http://localhost:8080/device)：选择历史任务，按需接收状态和事件，可在另一窗口观察。
-- [中心管理页](http://localhost:8080/admin)：查看已触达设备、在线判定、设备快照和各设备任务详情（只读）。
+- [中心管理页](http://localhost:8080/admin)：从“待处理 / 设备 / 任务”三个入口查看设备健康、跨设备任务和排障详情（只读）。
 - [健康检查](http://localhost:8080/healthz)。默认控制服务仅监听本机。
 
 建议演示：新建 A → 在“展示任务”选择 A → 在“消息目标”选择 A 并发送修改（等待真实停止后复用）→ 新建 B（A 不被停止）→ 切换展示 A/B → 空闲后点击“看效果”。查询和展示选择不会改变消息目标。模拟模式使用固定番茄钟模板，不实际生成代码。
@@ -71,7 +71,7 @@ docs/                      接口协议与外部接入约定
 
 设备不持有 AgentAPI 凭据，也不包含编程执行逻辑。`DEV_TOOLS=false` 同时关闭模拟页面、静态联调资源和 `/api/commands`；硬件通过独立的设备协议接入。
 
-中心管理页使用与控制台相同的 `CONTROL_TOKEN`，只读展示进程内设备注册表和按 `metadata.device_id` 归属的 AgentAPI 任务。设备通过受鉴权的 MCP 请求被发现并刷新 `last_seen`；“在线”只表示最近触达 control，不是硬件心跳。注册表和 `task_ref` 仍是内存状态，重启后由设备重新触达并重新列出历史任务。
+中心管理页使用与控制台相同的 `CONTROL_TOKEN`，默认打开“待处理”视图，也可切换到设备列表和跨设备任务列表。全局搜索支持设备 ID、task_ref、AgentAPI session_id 和任务标题；任务详情始终带所属设备。页面只读展示进程内设备注册表和按 `metadata.device_id` 归属的 AgentAPI 任务。设备通过受鉴权的 MCP 请求被发现并刷新 `last_seen`；“在线”只表示最近触达 control，不是硬件心跳。注册表和 `task_ref` 仍是内存状态，重启后由设备重新触达并重新列出历史任务。该阶段 proposal 和实现记录在 [Issue #23](https://github.com/wwcchh0123/hackathonGO-2026/issues/23)。
 
 ## 接入真实 AgentAPI
 

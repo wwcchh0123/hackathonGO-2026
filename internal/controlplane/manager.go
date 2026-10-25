@@ -20,6 +20,18 @@ import (
 
 var ErrUnknownDevice = errors.New("设备未知或已过期")
 
+func appendUnique(values []string, value string) []string {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
 type Options struct {
 	// OnlineWindow is the period in which a touched device is shown online.
 	// It describes control-plane reachability, not a hardware heartbeat.
@@ -69,6 +81,8 @@ type DeviceOverview struct {
 	Snapshot       device.Snapshot `json:"snapshot"`
 	TaskCounts     TaskCounts      `json:"task_counts"`
 	TasksError     string          `json:"tasks_error,omitempty"`
+	Attention      []string        `json:"attention,omitempty"`
+	LastError      string          `json:"last_error,omitempty"`
 }
 
 func New(ctx context.Context, provider agentapi.Provider, defaultID, dataDir, publicURL string, options ...Options) *Manager {
@@ -186,9 +200,19 @@ func (m *Manager) Overview(ctx context.Context, id string) (DeviceOverview, erro
 		o.LastSeen = &lastCopy
 		o.Online = time.Since(last) <= m.onlineWindow
 	}
+	for _, reason := range []string{snapshot.Error, snapshot.StreamError, snapshot.PreviewError} {
+		if reason != "" {
+			o.Attention = appendUnique(o.Attention, reason)
+			if o.LastError == "" {
+				o.LastError = reason
+			}
+		}
+	}
 	page, err := r.controller.ListTasks(ctx, session.ListOptions{Limit: 50, IncludeArchived: true})
 	if err != nil {
 		o.TasksError = err.Error()
+		o.Attention = appendUnique(o.Attention, "任务查询失败")
+		o.LastError = o.TasksError
 		return o, nil
 	}
 	o.TaskCounts.HasMore = page.HasMore
@@ -205,6 +229,21 @@ func (m *Manager) Overview(ctx context.Context, id string) (DeviceOverview, erro
 			o.TaskCounts.Terminated++
 		default:
 			o.TaskCounts.Other++
+		}
+		command := r.controller.LatestCommand(task.Ref)
+		if command != nil {
+			if command.State == "unknown" || command.State == "failed" {
+				o.Attention = appendUnique(o.Attention, "存在"+command.State+"命令")
+				if o.LastError == "" {
+					o.LastError = command.Error
+				}
+			}
+		}
+		if task.Status == "terminated" {
+			o.Attention = appendUnique(o.Attention, "存在已终止任务")
+		}
+		if !o.Online && task.Status == "running" {
+			o.Attention = appendUnique(o.Attention, "设备离线但任务仍运行")
 		}
 	}
 	return o, nil

@@ -10,6 +10,12 @@ import (
 	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
 )
 
+type failedSendProvider struct{ agentapi.Provider }
+
+func (p *failedSendProvider) SendMessage(context.Context, string, agentapi.Message) (agentapi.AcceptedInput, error) {
+	return agentapi.AcceptedInput{}, errors.New("simulated send failure")
+}
+
 func waitCommand(t *testing.T, c *session.Controller, receipt session.Receipt) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -30,7 +36,7 @@ func waitCommand(t *testing.T, c *session.Controller, receipt session.Receipt) {
 func TestManagerRoutesDevicesAndAggregatesOwnedTasks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	mock := agentapi.NewMock(ctx)
-	mock.Step = time.Millisecond
+	mock.Step = time.Hour
 	m := New(ctx, mock, "a", t.TempDir(), "http://example.test", Options{OnlineWindow: time.Second})
 	defer func() { cancel(); m.Wait() }()
 	if err := m.Touch("a", "test"); err != nil {
@@ -44,11 +50,11 @@ func TestManagerRoutesDevicesAndAggregatesOwnedTasks(t *testing.T) {
 	if !ok || cb == ca {
 		t.Fatal("devices did not get independent controllers")
 	}
-	ra, err := ca.Submit(session.Command{Action: "start", Prompt: "A"})
+	ra, err := ca.Submit(session.Command{Action: "start", Prompt: "alpha-task"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rb, err := cb.Submit(session.Command{Action: "start", Prompt: "B"})
+	rb, err := cb.Submit(session.Command{Action: "start", Prompt: "beta-task"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +71,14 @@ func TestManagerRoutesDevicesAndAggregatesOwnedTasks(t *testing.T) {
 	}
 	if _, err := m.Snapshot("b"); err != nil {
 		t.Fatal(err)
+	}
+	dashboard, err := m.Dashboard(ctx)
+	if err != nil || dashboard.DeviceCount != 2 || dashboard.RunningTasks != 2 {
+		t.Fatal("dashboard did not aggregate devices/tasks", dashboard, err)
+	}
+	searched, err := m.DashboardQuery(ctx, "alpha-task")
+	if err != nil || len(searched.Tasks) != 1 || searched.Tasks[0].DeviceID != "a" {
+		t.Fatal("dashboard query did not locate task", searched, err)
 	}
 	if _, err := m.ListTasks(ctx, "unknown", session.ListOptions{}); !errors.Is(err, ErrUnknownDevice) {
 		t.Fatal(err)
@@ -95,6 +109,67 @@ func TestDefaultDeviceIncludesLegacySessionsOnlyForDefault(t *testing.T) {
 	otherTasks, err := m.ListTasks(ctx, "other", session.ListOptions{})
 	if err != nil || len(otherTasks.Data) != 0 {
 		t.Fatal(otherTasks, err)
+	}
+}
+
+func TestAdminViewsSearchAndAttentionReasons(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := agentapi.NewMock(ctx)
+	mock.Step = time.Hour
+	m := New(ctx, mock, "default", t.TempDir(), "http://example.test", Options{OnlineWindow: time.Second})
+	defer func() { cancel(); m.Wait() }()
+	if err := m.Touch("other", "mcp"); err != nil {
+		t.Fatal(err)
+	}
+	c := m.DefaultController()
+	receipt, err := c.Submit(session.Command{Action: "start", Prompt: "searchable task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The mock is intentionally held running, so the default device has an
+	// active task that becomes actionable once the control-plane touch expires.
+	waitCommand(t, c, receipt)
+	time.Sleep(1100 * time.Millisecond)
+	page, err := m.ListAdminTasks(ctx, TaskListOptions{Query: "searchable", Limit: 10})
+	if err != nil || len(page.Data) != 1 || page.Data[0].DeviceID != "default" {
+		t.Fatal(page, err)
+	}
+	if len(page.Data[0].Attention) == 0 || page.Data[0].Attention[0] != "设备离线但任务仍运行" {
+		t.Fatalf("running task attention: %+v", page.Data[0])
+	}
+	devices, err := m.ListDeviceViews(ctx, DeviceListOptions{Health: "attention", Limit: 10})
+	if err != nil || len(devices.Data) != 1 || devices.Data[0].DeviceID != "default" {
+		t.Fatal(devices, err)
+	}
+	if _, err := m.ListAdminTasks(ctx, TaskListOptions{Status: "bad"}); err == nil {
+		t.Fatal("unknown task status accepted")
+	}
+}
+
+func TestAdminViewsExposeFailedCommandAttention(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := agentapi.NewMock(ctx)
+	p := &failedSendProvider{Provider: mock}
+	m := New(ctx, p, "default", t.TempDir(), "http://example.test", Options{OnlineWindow: time.Second})
+	defer func() { cancel(); m.Wait() }()
+	receipt, err := m.DefaultController().Submit(session.Command{Action: "start", Prompt: "will fail"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if command := m.DefaultController().LatestCommand(receipt.TaskRef); command != nil && command.State == "failed" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	page, err := m.ListAdminTasks(ctx, TaskListOptions{Limit: 10})
+	if err != nil || len(page.Data) != 1 || len(page.Data[0].Attention) == 0 || page.Data[0].Attention[0] != "命令失败" {
+		t.Fatal(page, err)
+	}
+	devices, err := m.ListDeviceViews(ctx, DeviceListOptions{Health: "attention", Limit: 10})
+	if err != nil || len(devices.Data) != 1 || devices.Data[0].LastError == "" {
+		t.Fatal(devices, err)
 	}
 }
 

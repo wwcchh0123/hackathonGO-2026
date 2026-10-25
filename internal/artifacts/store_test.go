@@ -24,6 +24,39 @@ func TestPublishRejectsEscapingArtifactPaths(t *testing.T) {
 	}
 }
 
+func TestPublishPreservesCompleteProjectTreeAndUsesRootIndex(t *testing.T) {
+	store := Store{Root: t.TempDir(), PublicURL: "http://example.test"}
+	files := []agentapi.File{
+		{Path: "index.html", Data: []byte(`<script src="assets/app.js"></script><link rel="stylesheet" href="assets/app.css"><img src="images/logo.svg">`)},
+		{Path: "assets/app.js", Data: []byte("console.log('ready')")},
+		{Path: "assets/app.css", Data: []byte("body { color: green; }")},
+		{Path: "images/logo.svg", Data: []byte("<svg viewBox=\"0 0 1 1\"></svg>")},
+		{Path: "data/example.json", Data: []byte(`{"ready":true}`)},
+	}
+	result, err := store.Publish(context.Background(), files, "session-complete-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/results/"), "/")
+	if len(parts) != 2 || parts[1] != "index.html" {
+		t.Fatalf("preview entry is not root index.html: %s", result)
+	}
+	publication := filepath.Join(store.Root, parts[0])
+	for _, file := range files {
+		got, err := os.ReadFile(filepath.Join(publication, filepath.FromSlash(file.Path)))
+		if err != nil {
+			t.Fatalf("missing artifact %s: %v", file.Path, err)
+		}
+		if string(got) != string(file.Data) {
+			t.Fatalf("artifact %s changed during publication", file.Path)
+		}
+	}
+}
+
 func TestStorageScopeIsBoundToTaskAndSurvivesCacheReload(t *testing.T) {
 	store := Store{Root: t.TempDir(), PublicURL: "http://example.test"}
 	publish := func(scope string) (string, string) {

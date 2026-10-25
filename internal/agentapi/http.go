@@ -275,6 +275,9 @@ func (p *HTTP) Stream(ctx context.Context, id string, emit func(events.Frame) er
 }
 
 func (p *HTTP) Artifacts(ctx context.Context, id string) ([]File, error) {
+	// Files are versioned individually by AgentAPI. Walk every page, retain the
+	// newest object for each returned relative path, then download that complete
+	// path set so a root index can resolve its sibling assets.
 	pager := p.client.Beta.Files.ListAutoPaging(ctx, anthropic.BetaFileListParams{ScopeID: param.NewOpt(id), Limit: param.NewOpt(int64(100))})
 	type reference struct {
 		ID, Filename string

@@ -25,6 +25,9 @@ type Store struct {
 const ScopeFilename = ".linxi-preview-scope"
 
 func (s *Store) Publish(ctx context.Context, files []agentapi.File, storageScope ...string) (string, error) {
+	// A publication is a directory snapshot: every input path is written below
+	// one opaque root, while the returned URL points at the selected index file.
+	// Relative references from index.html therefore resolve within the snapshot.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(files) == 0 {

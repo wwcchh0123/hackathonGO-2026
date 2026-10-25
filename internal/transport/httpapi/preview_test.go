@@ -20,7 +20,13 @@ func TestResultViewerSeparatesTrustedStorageFromUserHTML(t *testing.T) {
 	root := t.TempDir()
 	store := artifacts.Store{Root: root}
 	original := `<!doctype html><script>window.artifactSentinel="</script><script>alert('user')</script>"</script><form><button>add</button></form>`
-	result, err := store.Publish(context.Background(), []agentapi.File{{Path: "index.html", Data: []byte(original)}, {Path: "app.js", Data: []byte("window.loaded=true")}, {Path: "payload", Data: []byte("<html><script>alert(1)</script>")}}, "session-a")
+	result, err := store.Publish(context.Background(), []agentapi.File{
+		{Path: "index.html", Data: []byte(original)},
+		{Path: "assets/app.js", Data: []byte("window.loaded=true")},
+		{Path: "assets/app.css", Data: []byte("body{color:green}")},
+		{Path: "images/logo.svg", Data: []byte("<svg></svg>")},
+		{Path: "payload", Data: []byte("<html><script>alert(1)</script>")},
+	}, "session-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,9 +76,17 @@ func TestResultViewerSeparatesTrustedStorageFromUserHTML(t *testing.T) {
 		t.Fatal("user HTML escaped inert JSON")
 	}
 	base := strings.TrimSuffix(u.Path, "index.html")
-	headers, js := get(base+"app.js", 200)
+	headers, js := get(base+"assets/app.js", 200)
 	if js != "window.loaded=true" || headers.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatal("relative resource unavailable", js)
+	}
+	headers, css := get(base+"assets/app.css", 200)
+	if css != "body{color:green}" || headers.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("nested stylesheet unavailable", css)
+	}
+	_, logo := get(base+"images/logo.svg", 200)
+	if logo != "<svg></svg>" {
+		t.Fatal("nested image unavailable", logo)
 	}
 	headers, _ = get(base+"payload", 200)
 	if !strings.HasPrefix(headers.Get("Content-Security-Policy"), "sandbox ") {

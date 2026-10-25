@@ -191,6 +191,68 @@ func TestPreviewUsesNewestExportAcrossFilePages(t *testing.T) {
 	}
 }
 
+func TestArtifactsSyncsEveryLatestProjectPathAcrossPages(t *testing.T) {
+	contents := map[string]string{
+		"index": `<script src="assets/app.js"></script>`,
+		"js":    "console.log('latest')",
+		"css":   "body{color:green}",
+		"logo":  "<svg></svg>",
+		"data":  `{"ready":true}`,
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/files":
+			if r.URL.Query().Get("page") == "older" {
+				fmt.Fprint(w, `{"data":[{"id":"old-js","filename":"assets/app.js","created_at":"2026-10-23T00:00:00Z"},{"id":"logo","filename":"images/logo.svg","created_at":"2026-10-24T00:00:00Z"},{"id":"data","filename":"data/example.json","created_at":"2026-10-24T00:00:00Z"}]}`)
+			} else {
+				fmt.Fprint(w, `{"data":[{"id":"index","filename":"index.html","created_at":"2026-10-24T00:00:00Z"},{"id":"js","filename":"assets/app.js","created_at":"2026-10-24T00:00:00Z"},{"id":"css","filename":"assets/app.css","created_at":"2026-10-24T00:00:00Z"}],"next_page":"older"}`)
+			}
+		case "/v1/files/index/content":
+			fmt.Fprint(w, contents["index"])
+		case "/v1/files/js/content":
+			fmt.Fprint(w, contents["js"])
+		case "/v1/files/css/content":
+			fmt.Fprint(w, contents["css"])
+		case "/v1/files/logo/content":
+			fmt.Fprint(w, contents["logo"])
+		case "/v1/files/data/content":
+			fmt.Fprint(w, contents["data"])
+		case "/v1/files/old-js/content":
+			t.Errorf("downloaded obsolete artifact version")
+			fmt.Fprint(w, "obsolete")
+		default:
+			t.Errorf("unexpected artifact request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	files, err := NewHTTP(upstream.URL, "test", "agent", "environment").Artifacts(context.Background(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"index.html":        contents["index"],
+		"assets/app.js":     contents["js"],
+		"assets/app.css":    contents["css"],
+		"images/logo.svg":   contents["logo"],
+		"data/example.json": contents["data"],
+	}
+	if len(files) != len(want) {
+		t.Fatalf("synced %d artifacts, want %d: %+v", len(files), len(want), files)
+	}
+	for _, file := range files {
+		if file.Data == nil || string(file.Data) != want[file.Path] {
+			t.Fatalf("unexpected synced artifact %q: %q", file.Path, file.Data)
+		}
+		delete(want, file.Path)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing synced artifacts: %+v", want)
+	}
+}
+
 func TestSessionCatalogSDKContractProjectionAndVaults(t *testing.T) {
 	ctx := context.Background()
 	rawSession := `{"id":"ses_catalog","status":"idle","title":"historical","agent":{"runtime":"claudecode","system":"private-system"},"metadata":{"source":"linxi-control"},"resources":[{"authorization_token":"private-token"}],"vault_ids":["vlt_private"],"created_at":"2026-10-24T00:00:00Z"}`

@@ -161,9 +161,9 @@ data: {"id":"evt_...","type":"agent.message","content":[{"type":"text","text":"�
 
 最多 4 个实时观察连接；退出/断连释放，不停止 Agent。连接跨 idle 保持；上游重连不代表重新执行任务。无法恢复时发送 stream_error/resync_required；设备应新建连接重新同步。联调页面最多保留 512 条展示事件；内存事件 Hub 每 Session 最多 512 条/8 MiB，淘汰游标要求重新同步。
 
-展示页在每一轮会话进入 idle 后自动调用 `POST /display/preview`。这个接口只接受展示 URL 中的短期 `task_ref`，不需要控制令牌；服务端优先查找 `/mnt/session/outputs/index.html`，找不到时再选择其他 HTML 文件。接口返回 `available: false` 时展示页最多每 3 秒重试 4 次，仍没有 HTML 就保留事件时间线，不阻塞任务展示。找到结果后，页面在右侧隔离 iframe 中打开托管的静态页面，设备浏览器投屏的就是完整展示页。
+展示页在每一轮会话进入 idle 后自动调用 `POST /display/preview`。这个接口只接受展示 URL 中的短期 `task_ref`，不需要控制令牌；服务端同步当前 Session 的全部 Files 产物，保留 AgentAPI 返回的相对路径，优先使用 `/mnt/session/outputs/index.html` 作为预览入口。入口引用的 `assets/app.js`、样式、图片和其他子目录文件从同一发布目录提供。接口返回 `available: false` 时展示页最多每 3 秒重试 4 次，仍没有 HTML 就保留事件时间线，不阻塞任务展示。找到结果后，页面在右侧隔离 iframe 中打开托管的静态页面，设备浏览器投屏的就是完整展示页。
 
-预览下载有界：单文件上限 10 MiB、总计 64 MiB、最多 100 个最新路径，扫描历史导出最多 500 条，预算 30 秒；任务代际改变时丢弃迟到发布，A 的预览不覆盖 B；最多同时下载 2 份，磁盘保留最近 32 份预览，已淘汰的本地链接通过详情失效后可重新请求。不会因没有 HTML 隐藏其他文件元信息。控制服务仍保留 `POST /api/tasks/{task_ref}/preview` 供受保护的显式调用，公开展示接口只用于设备页面的自动预览。
+预览同步有界：单文件上限 10 MiB、总计 64 MiB、最多 100 个最新路径，扫描历史导出最多 500 条，预算 30 秒；这些限制用于保护控制服务，不改变同一范围内“按路径同步全部产物”的语义。任务代际改变时丢弃迟到发布，A 的预览不覆盖 B；最多同时下载 2 份，磁盘保留最近 32 份预览，已淘汰的本地链接通过详情失效后可重新请求。不会因没有 HTML 隐藏其他文件元信息。控制服务仍保留 `POST /api/tasks/{task_ref}/preview` 供受保护的显式调用，公开展示接口只用于设备页面的自动预览。
 
 ## 中心设备管理链路
 
@@ -198,7 +198,7 @@ control 进程通过 `internal/controlplane` 维护一个进程内设备注册�
 - 列表适配实际部署的单值 status、创建时间过滤和 page；不发送 SDK 的 statuses[]/order，不冒用 Portal 的 environment_id/q。
 - Events.Send 使用 input.parts，payload.client_request_id 关联受理事件（关联 ID 不等于上游幂等保证）；Status 真实 idle 才释放打断等待。
 - Events.List 通过 types[]、order、page 有界查询；SSE 的全历史回放不依赖上游 Last-Event-ID。
-- Files.List 使用 scope_id 与分页；get_task 只读元信息，显式 preview 才下载。
+- Files.List 使用 scope_id 与分页；预览会遍历全部文件页，按路径保留最新文件并下载完整的静态工程；get_task 只读元信息，显式 preview 才下载。
 - GitHub git/gh 能力由上游 Vault 注入和 Claude Code 提供。API/克隆/推送目标须在目标部署分别验证；控制服务不新增 GitHub provider 或 Issue/PR 状态机。
 
 Mac 语音终端身份、OTA 和语音协议保持独立，当前不声明 features.mcp，也未接入端侧展示。绑定信息保存在忽略的 `.data/voice`。灵矽协议依据：[云端 MCP](https://linx.qiniu.com/docs/xrobot/mcp/software-mcp)。

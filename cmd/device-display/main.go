@@ -32,6 +32,7 @@ import (
 type config struct {
 	ListenAddr        string
 	Browser           string
+	BrowserUserAgent  string
 	Width, Height     int
 	AllowedHosts      []string
 	AirPlayTarget     string
@@ -75,7 +76,7 @@ func run() error {
 	rt := &runtime{
 		base:    ctx,
 		cfg:     cfg,
-		browser: &browser{binary: cfg.Browser, width: cfg.Width, height: cfg.Height},
+		browser: &browser{binary: cfg.Browser, userAgent: cfg.BrowserUserAgent, width: cfg.Width, height: cfg.Height},
 		cast: devicecast.New(devicecast.Config{
 			Binary: cfg.Doubletake, Target: cfg.AirPlayTarget, Port: cfg.AirPlayPort,
 			Password: cfg.AirPlayPassword, Credentials: cfg.AirPlayCredential,
@@ -154,12 +155,13 @@ func (r *runtime) StopCast(context.Context) error {
 }
 
 type browser struct {
-	mu     sync.Mutex
-	binary string
-	width  int
-	height int
-	cancel context.CancelFunc
-	done   <-chan error
+	mu        sync.Mutex
+	binary    string
+	userAgent string
+	width     int
+	height    int
+	cancel    context.CancelFunc
+	done      <-chan error
 }
 
 func (b *browser) Open(parent context.Context, rawURL string) error {
@@ -183,6 +185,7 @@ func (b *browser) Open(parent context.Context, rawURL string) error {
 		"--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--hide-scrollbars",
 		"--no-first-run", "--no-default-browser-check", "--disable-features=Translate,TranslateUI,MediaRouter",
 		"--disable-translate", "--lang=zh-CN", "--window-position=0,0",
+		"--user-agent=" + b.userAgent,
 		fmt.Sprintf("--window-size=%d,%d", b.width, b.height), "--kiosk", "--app=" + rawURL,
 	}
 	cmd := exec.CommandContext(ctx, binary, args...)
@@ -221,6 +224,7 @@ func loadConfig() (config, error) {
 	c := config{
 		ListenAddr:        env("DEVICE_MCP_LISTEN_ADDR", "127.0.0.1:8787"),
 		Browser:           os.Getenv("BROWSER_BIN"),
+		BrowserUserAgent:  env("BROWSER_USER_AGENT", "LinxiDevice/0.1"),
 		Width:             intEnv("SCREEN_WIDTH", 1920),
 		Height:            intEnv("SCREEN_HEIGHT", 1080),
 		AllowedHosts:      splitEnv("DISPLAY_ALLOWED_HOSTS"),

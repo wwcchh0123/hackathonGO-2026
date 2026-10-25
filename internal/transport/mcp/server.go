@@ -211,9 +211,9 @@ func displayURL(publicURL, taskRef string) string {
 	}
 	query := page.Query()
 	query.Set("task_ref", taskRef)
-	// ngrok's free browser interstitial is bypassed by this query parameter.
-	// Keep it in the returned URL so both the device Chromium and a human
-	// opening the same display link avoid the interstitial.
+	// ngrok's free browser interstitial honors this query parameter. The
+	// simulated device also uses a non-standard User-Agent because Chromium
+	// may follow redirects or request assets without preserving URL hints.
 	if isNgrokHost(page.Hostname()) {
 		query.Set("ngrok-skip-browser-warning", "true")
 	}

@@ -165,6 +165,7 @@ function setStatus(status) {
   state.status = status || 'ready';
   const running = state.status === 'running' || state.status === 'rescheduling';
   const done = state.status === 'idle';
+  if (running) clearPreview();
   $('status').textContent = running ? 'WORKING' : done ? 'DONE' : String(state.status || 'READY').toUpperCase();
   $('status-pill').className = `status-pill ${running ? 'live' : done ? 'done' : ''}`;
   $('run-summary-label').textContent = statusLabel(state.status);
@@ -203,7 +204,7 @@ function previewSource(url) {
 }
 
 function showPreview(url) {
-  if (!url) return;
+  if (!url || state.status !== 'idle') return;
   const source = previewSource(url);
   state.previewURL = url;
   $('preview-pane').hidden = false;
@@ -514,7 +515,7 @@ function applySnapshot(snapshot) {
   }
   if (snapshot.session_id) $('session-id').textContent = snapshot.session_id.slice(0, 18);
   if (snapshot.started_at) $('time-range').textContent = `${timeOf(snapshot.started_at)} — ${timeOf(snapshot.ended_at)}`;
-  if (snapshot.result_url) showPreview(snapshot.result_url);
+  if (snapshot.result_url && state.status === 'idle') showPreview(snapshot.result_url);
   if (snapshot.status === 'idle') requestPreview();
 }
 

@@ -306,6 +306,7 @@ code, time { font-family: var(--mono); }
 .preview-placeholder { display: flex; width: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 8px; min-height: 260px; padding: 30px; color: #777; font-size: 11px; text-align: center; }
 .preview-placeholder strong { color: #444; font-size: 14px; font-weight: 550; }
 .preview-placeholder-icon { display: grid; width: 38px; height: 38px; margin-bottom: 4px; place-items: center; border: 1px solid #d8d8d8; border-radius: 12px; color: #888; font-size: 22px; }
+.preview-pane[hidden], .preview-placeholder[hidden], .preview-frame[hidden] { display: none; }
 
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 240px minmax(0, 1fr); }

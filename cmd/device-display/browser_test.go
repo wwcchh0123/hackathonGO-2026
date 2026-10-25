@@ -65,7 +65,7 @@ func TestBrowserCDPInspectionCaptureAndClick(t *testing.T) {
 				"data": base64.StdEncoding.EncodeToString(capturePayload),
 			}}
 		case "Runtime.evaluate":
-			if strings.Contains(string(data), "scrollIntoView") {
+			if strings.Contains(string(data), `\"action\":\"click\"`) {
 				response = map[string]any{"id": request.ID, "result": map[string]any{"result": map[string]any{
 					"type": "object", "value": map[string]any{"found": true, "x": 80, "y": 40},
 				}}}
@@ -111,7 +111,7 @@ func TestBrowserCDPInspectionCaptureAndClick(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(methods) != 5 || methods[0] != "Page.captureScreenshot" || methods[1] != "Runtime.evaluate" || methods[2] != "Runtime.evaluate" || methods[3] != "Input.dispatchMouseEvent" || methods[4] != "Input.dispatchMouseEvent" {
+	if len(methods) != 6 || methods[0] != "Page.captureScreenshot" || methods[1] != "Runtime.evaluate" || methods[2] != "Runtime.evaluate" || methods[3] != "Runtime.evaluate" || methods[4] != "Input.dispatchMouseEvent" || methods[5] != "Input.dispatchMouseEvent" {
 		t.Fatalf("CDP methods: %v", methods)
 	}
 }

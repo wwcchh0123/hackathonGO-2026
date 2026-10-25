@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -25,28 +24,44 @@ type Screen struct {
 // image content so the Linxi agent can inspect exactly what is being mirrored
 // over AirPlay instead of reasoning from the task event stream alone.
 type BrowserCapture struct {
-	URL   string
-	Title string
-	PNG   []byte
+	URL            string
+	Title          string
+	PNG            []byte
+	Inspection     *BrowserInspection
+	StructureError string
 }
 
-// BrowserInspection contains a small, visible-only accessibility-oriented
-// page summary. ElementID values are short-lived and are valid until the next
-// inspect_browser call or a page navigation.
+// BrowserInspection contains a bounded projection of the rendered DOM, not a
+// preselected list of controls. ElementID values expire on the next capture or
+// inspection, or when their document navigates.
 type BrowserInspection struct {
 	URL         string           `json:"url"`
 	Title       string           `json:"title"`
 	VisibleText string           `json:"visible_text,omitempty"`
 	Elements    []BrowserElement `json:"elements"`
+	Frames      []BrowserFrame   `json:"frames,omitempty"`
+	Partial     bool             `json:"partial,omitempty"`
+}
+
+// Frames identify embedded preview documents so the agent can distinguish
+// task history from the actual running app, even without image support.
+type BrowserFrame struct {
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	VisibleText string `json:"visible_text,omitempty"`
+	HTML        string `json:"html"`
 }
 
 type BrowserElement struct {
-	ID     string        `json:"element_id"`
-	Tag    string        `json:"tag"`
-	Role   string        `json:"role,omitempty"`
-	Label  string        `json:"label,omitempty"`
-	Text   string        `json:"text,omitempty"`
-	Bounds BrowserBounds `json:"bounds"`
+	ID       string        `json:"element_id"`
+	Tag      string        `json:"tag"`
+	Role     string        `json:"role,omitempty"`
+	Label    string        `json:"label,omitempty"`
+	Text     string        `json:"text,omitempty"`
+	FrameURL string        `json:"frame_url,omitempty"`
+	Expanded *bool         `json:"expanded,omitempty"`
+	Disabled bool          `json:"disabled,omitempty"`
+	Bounds   BrowserBounds `json:"bounds"`
 }
 
 type BrowserBounds struct {
@@ -70,7 +85,7 @@ type Runtime interface {
 // reverse proxy can mount this handler under /device/ while the control MCP
 // remains mounted under /mcp on the same public ngrok endpoint.
 func Handler(runtime Runtime) http.Handler {
-	server := mcp.NewServer(&mcp.Implementation{Name: "linxi-device-display", Version: "0.2.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "linxi-device-display", Version: "0.3.0"}, nil)
 	server.AddTool(&mcp.Tool{
 		Name:        "scan_screens",
 		Description: "扫描本地局域网可用的投屏目标，返回 screen_id 和名称。",
@@ -139,7 +154,7 @@ func Handler(runtime Runtime) http.Handler {
 	})
 	server.AddTool(&mcp.Tool{
 		Name:        "capture_screen",
-		Description: "获取设备浏览器当前画面的截图。它与 AirPlay 投屏画面相同，用于理解用户正在看的内容；需要页面结构时再调用 inspect_browser。",
+		Description: "一次返回当前投屏截图和实际 DOM/HTML 结构，包括 iframe 作品内的元素属性、层级及 element_id。结合图片与结构定位后直接 click_browser；结构读取不完整会标记 partial，不能据此断言预览只读。",
 		InputSchema: emptySchema(),
 	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		capture, err := runtime.CaptureScreen(ctx)
@@ -149,14 +164,20 @@ func Handler(runtime Runtime) http.Handler {
 		if len(capture.PNG) == 0 {
 			return textResult("当前没有可用的浏览器画面", true), nil
 		}
+		metadata, _ := json.Marshal(struct {
+			URL            string             `json:"url"`
+			Title          string             `json:"title"`
+			Page           *BrowserInspection `json:"page,omitempty"`
+			StructureError string             `json:"structure_error,omitempty"`
+		}{capture.URL, capture.Title, capture.Inspection, capture.StructureError})
 		return &mcp.CallToolResult{Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("当前页面：%s\n标题：%s", capture.URL, capture.Title)},
+			&mcp.TextContent{Text: string(metadata)},
 			&mcp.ImageContent{Data: capture.PNG, MIMEType: "image/png"},
 		}}, nil
 	})
 	server.AddTool(&mcp.Tool{
 		Name:        "inspect_browser",
-		Description: "读取当前投屏浏览器的页面标题、可见文本和可交互元素。元素会返回短期 element_id，后续可交给 click_browser；不要猜 CSS 选择器。",
+		Description: "读取投屏主页面及 iframe 内的实际 DOM/HTML 树，不限 button：div、卡片、SVG、canvas 等可见节点均有 element_id。结合 frames[].html 的层级和属性与截图判断交互目标，再点击对应 ID。frame_url 标明文档；不是所有节点都可交互。",
 		InputSchema: emptySchema(),
 	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		inspection, err := runtime.InspectBrowser(ctx)
@@ -171,11 +192,11 @@ func Handler(runtime Runtime) http.Handler {
 	})
 	server.AddTool(&mcp.Tool{
 		Name:        "click_browser",
-		Description: "点击当前浏览器页面中 inspect_browser 返回的 element_id，例如展开卡片、按钮或链接。点击后应再次调用 capture_screen 或 inspect_browser 验证结果。",
+		Description: "点击最近一次 capture_screen 或 inspect_browser 返回的 element_id，支持 iframe 内外的真实 DOM 元素，包括 div、卡片、链接和 SVG。点击后检查变化，再简短告知结果；无需重新投屏。",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"element_id": map[string]any{"type": "string", "pattern": `^e[0-9]{1,3}$`, "description": "最近一次 inspect_browser 返回的元素 ID"},
+				"element_id": map[string]any{"type": "string", "pattern": `^e[0-9]{1,12}$`, "description": "最近一次 capture_screen 或 inspect_browser 返回的元素 ID"},
 			},
 			"required":             []string{"element_id"},
 			"additionalProperties": false,
@@ -263,7 +284,7 @@ func validURL(raw string) bool {
 }
 
 func validElementID(raw string) bool {
-	if len(raw) < 2 || len(raw) > 4 || raw[0] != 'e' {
+	if len(raw) < 2 || len(raw) > 13 || raw[0] != 'e' {
 		return false
 	}
 	for _, r := range raw[1:] {

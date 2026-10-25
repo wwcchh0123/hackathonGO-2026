@@ -14,11 +14,11 @@
     </section>
     <div class="app" id="app" hidden>
       <header>
-        <div><span class="mark">✳</span><strong>CONTROL CENTER</strong><small>设备与任务排障</small></div>
+        <div><span class="mark">✳</span><strong>CONTROL CENTER</strong></div>
         <div class="actions"><span id="queried"></span><button id="refresh">刷新</button></div>
       </header>
       <main>
-        <section class="hero"><div><span class="eyebrow">中心服务 · 只读排查</span><h1>先找问题，再看上下文。</h1><p>待处理聚合异常，设备视图看连接健康，任务视图跨设备追踪执行。</p></div><div class="badge" id="mode">CONTROL</div></section>
+        <section class="hero"><h1>设备与任务</h1><div class="badge" id="mode">CONTROL</div></section>
         <section class="stats" id="stats"></section>
         <nav class="nav" aria-label="管理视图"><button data-view="attention" class="active">待处理</button><button data-view="devices">设备</button><button data-view="tasks">任务</button></nav>
         <form class="toolbar" id="search-form"><label><span>全局搜索</span><input id="query" placeholder="设备 ID、task_ref、session_id 或标题" autocomplete="off" /></label><label id="status-filter" hidden><span>任务状态</span><select id="status"><option value="">全部状态</option><option value="running">运行中</option><option value="idle">空闲</option><option value="rescheduling">排队中</option><option value="terminated">已终止</option></select></label><button>搜索</button></form>

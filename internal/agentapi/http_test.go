@@ -238,10 +238,10 @@ func TestWriteErrorUncertaintyAndValidation(t *testing.T) {
 		t.Run(runtime, func(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				if strings.Contains(r.URL.Path, "agents") {
+				if r.URL.Path == "/v1/agents/a" {
 					fmt.Fprintf(w, `{"id":"a","type":"agent","runtime":%q}`, runtime)
 				} else {
-					fmt.Fprint(w, `{"id":"e","config":{"type":"cloud"}}`)
+					fmt.Fprint(w, `{"data":[{"id":"e","config":{"type":"cloud"}}],"next_page":null}`)
 				}
 			}))
 			defer upstream.Close()

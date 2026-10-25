@@ -96,7 +96,7 @@ func waitDetail(t *testing.T, c *session.Controller, r session.Receipt) session.
 	t.Fatal("command not confirmed")
 	return session.Detail{}
 }
-func TestMCPToIndependentDeviceStreamAndExplicitPreview(t *testing.T) {
+func TestMCPToIndependentDeviceStreamAndAutomaticPreview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	mock := agentapi.NewMock(ctx)
@@ -172,9 +172,33 @@ func TestMCPToIndependentDeviceStreamAndExplicitPreview(t *testing.T) {
 	if !errors.Is(err, stop) || count < 5 {
 		t.Fatal(count, err)
 	}
+	// The public display page can trigger its idle-round preview without the
+	// control token. The returned URL is the same cached publication used by
+	// the authenticated explicit endpoint below.
+	previewRequest, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/display/preview", strings.NewReader(`{"task_ref":"`+r.TaskRef+`"}`))
+	previewRequest.Header.Set("Content-Type", "application/json")
+	previewResponse, err := http.DefaultClient.Do(previewRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewRaw, _ := io.ReadAll(previewResponse.Body)
+	previewResponse.Body.Close()
+	if previewResponse.StatusCode != http.StatusOK {
+		t.Fatalf("display preview: %d %s", previewResponse.StatusCode, previewRaw)
+	}
+	var automatic struct {
+		Available bool   `json:"available"`
+		ResultURL string `json:"result_url"`
+	}
+	if err := json.Unmarshal(previewRaw, &automatic); err != nil || !automatic.Available || automatic.ResultURL == "" {
+		t.Fatalf("automatic preview: %s (%v)", previewRaw, err)
+	}
 	raw := request("POST", "/api/tasks/"+r.TaskRef+"/preview", "{}", 200)
 	var preview map[string]string
 	_ = json.Unmarshal(raw, &preview)
+	if preview["result_url"] != automatic.ResultURL {
+		t.Fatalf("preview was downloaded twice: %q != %q", preview["result_url"], automatic.ResultURL)
+	}
 	page, err := http.Get(preview["result_url"])
 	if err != nil {
 		t.Fatal(err)

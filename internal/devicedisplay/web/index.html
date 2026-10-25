@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#191919">
   <title>CodeAgent · Linxi display</title>
-  <link rel="stylesheet" href="./styles.css?v=portal-2">
-  <script defer src="./app.js?v=portal-2"></script>
+  <link rel="stylesheet" href="./styles.css?v=portal-3">
+  <script defer src="./app.js?v=portal-3"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -58,33 +58,56 @@
         </div>
       </header>
 
-      <div class="run-meta-row">
-        <div class="run-summary">
-          <span class="summary-chevron">›</span>
-          <span id="run-summary-label">Ready</span>
-          <span class="summary-separator">·</span>
-          <span id="run-summary-count">0 steps</span>
-        </div>
-        <div class="display-status">
-          <span class="display-status-icon" aria-hidden="true">▱</span>
-          <span>AirPlay display</span>
-          <span class="display-status-dot"></span>
-        </div>
+      <div class="run-content">
+        <section class="timeline-column">
+          <div class="run-meta-row">
+            <div class="run-summary">
+              <span class="summary-chevron">›</span>
+              <span id="run-summary-label">Ready</span>
+              <span class="summary-separator">·</span>
+              <span id="run-summary-count">0 steps</span>
+            </div>
+            <div class="display-status">
+              <span class="display-status-icon" aria-hidden="true">▱</span>
+              <span>AirPlay display</span>
+              <span class="display-status-dot"></span>
+            </div>
+          </div>
+
+          <section id="timeline" class="timeline" aria-live="polite">
+            <div id="empty" class="empty-state">
+              <div class="empty-icon">✦</div>
+              <strong>Choose a session to follow</strong>
+              <span>The selected AgentAPI run will appear here.</span>
+            </div>
+          </section>
+
+          <footer class="run-footer">
+            <span id="source">AgentAPI session events</span>
+            <span id="time-range">—</span>
+            <span><span id="event-count">0</span> visible steps</span>
+          </footer>
+        </section>
+
+        <aside id="preview-pane" class="preview-pane" hidden aria-label="Result preview">
+          <div class="preview-header">
+            <div>
+              <div class="preview-kicker">OUTPUT <span>/</span> PREVIEW</div>
+              <strong id="preview-title">Live result</strong>
+            </div>
+            <button id="preview-close" class="preview-close" type="button" aria-label="Close preview">×</button>
+          </div>
+          <div id="preview-status" class="preview-status">Checking exported files…</div>
+          <div class="preview-frame-wrap">
+            <div id="preview-placeholder" class="preview-placeholder">
+              <div class="preview-placeholder-icon">⌁</div>
+              <strong>Preparing preview</strong>
+              <span>Looking for the latest index.html export.</span>
+            </div>
+            <iframe id="preview-frame" title="Session result preview" sandbox="allow-forms allow-modals allow-popups allow-scripts" loading="lazy" hidden></iframe>
+          </div>
+        </aside>
       </div>
-
-      <section id="timeline" class="timeline" aria-live="polite">
-        <div id="empty" class="empty-state">
-          <div class="empty-icon">✦</div>
-          <strong>Choose a session to follow</strong>
-          <span>The selected AgentAPI run will appear here.</span>
-        </div>
-      </section>
-
-      <footer class="run-footer">
-        <span id="source">AgentAPI session events</span>
-        <span id="time-range">—</span>
-        <span><span id="event-count">0</span> visible steps</span>
-      </footer>
     </main>
   </div>
 </body>

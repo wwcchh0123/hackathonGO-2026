@@ -59,11 +59,33 @@ func (p *HTTP) Validate(ctx context.Context) error {
 	if err := json.Unmarshal([]byte(agent.RawJSON()), &agentMeta); err != nil || agentMeta.Runtime != "claudecode" {
 		return fmt.Errorf("configured agent must use claudecode runtime")
 	}
-	env, err := p.client.Beta.Environments.Get(ctx, p.environment, anthropic.BetaEnvironmentGetParams{})
+	// AgentAPI deployments currently expose environment details through the
+	// cursor list endpoint, while the generated SDK's item endpoint may return
+	// 404 for the same existing environment. Listing also lets us verify that
+	// the configured ID belongs to the current API key without mutating it.
+	environments, err := p.client.Beta.Environments.List(ctx, anthropic.BetaEnvironmentListParams{
+		Limit: param.NewOpt[int64](100),
+	})
 	if err != nil {
-		return sdkError("GET environment", err)
+		return sdkError("LIST environments", err)
 	}
-	if env.Config.Type != "cloud" || env.JSON.ArchivedAt.Valid() {
+	var env *anthropic.BetaEnvironment
+	for page := environments; page != nil; {
+		for i := range page.Data {
+			if page.Data[i].ID == p.environment {
+				env = &page.Data[i]
+				break
+			}
+		}
+		if env != nil || page.NextPage == "" {
+			break
+		}
+		page, err = page.GetNextPage()
+		if err != nil {
+			return sdkError("LIST environments", err)
+		}
+	}
+	if env == nil || env.Config.Type != "cloud" || env.JSON.ArchivedAt.Valid() {
 		return fmt.Errorf("configured environment must be an available cloud environment")
 	}
 	return nil

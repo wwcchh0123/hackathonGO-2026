@@ -148,11 +148,13 @@ data: {"id":"evt_...","type":"agent.message","content":[{"type":"text","text":"�
 
 最多 4 个实时观察连接；退出/断连释放，不停止 Agent。连接跨 idle 保持；上游重连不代表重新执行任务。无法恢复时发送 stream_error/resync_required；设备应新建连接重新同步。联调页面最多保留 512 条展示事件；内存事件 Hub 每 Session 最多 512 条/8 MiB，淘汰游标要求重新同步。
 
-预览只在显式请求时下载，单文件上限 10 MiB、总计 64 MiB、最多 100 个最新路径，扫描历史导出最多 500 条，预算 30 秒；任务代际改变时丢弃迟到发布，A 的预览不覆盖 B；最多同时下载 2 份，磁盘保留最近 32 份预览，已淘汰的本地链接通过详情失效后可重新请求。不会因没有 HTML 隐藏其他文件元信息。
+展示页在每一轮会话进入 idle 后自动调用 `POST /display/preview`。这个接口只接受展示 URL 中的短期 `task_ref`，不需要控制令牌；服务端优先查找 `/mnt/session/outputs/index.html`，找不到时再选择其他 HTML 文件。接口返回 `available: false` 时展示页最多每 3 秒重试 4 次，仍没有 HTML 就保留事件时间线，不阻塞任务展示。找到结果后，页面在右侧隔离 iframe 中打开托管的静态页面，设备浏览器投屏的就是完整展示页。
+
+预览下载有界：单文件上限 10 MiB、总计 64 MiB、最多 100 个最新路径，扫描历史导出最多 500 条，预算 30 秒；任务代际改变时丢弃迟到发布，A 的预览不覆盖 B；最多同时下载 2 份，磁盘保留最近 32 份预览，已淘汰的本地链接通过详情失效后可重新请求。不会因没有 HTML 隐藏其他文件元信息。控制服务仍保留 `POST /api/tasks/{task_ref}/preview` 供受保护的显式调用，公开展示接口只用于设备页面的自动预览。
 
 ## 开发控制台
 
-仅 DEV_TOOLS=true 暴露 POST /api/commands。新建使用 `{ "action":"new_project", "prompt":"做个页面" }`；修改使用 `{ "action":"message", "task_ref":"task_...", "prompt":"按钮改红" }`。返回 HTTP 202 和完整受理回执。消息目标和展示任务在联调页面分别选择，不能从当前画面猜测发送目标。预览需点击“看效果”，不在任务结束后自动下载。
+仅 DEV_TOOLS=true 暴露 POST /api/commands。新建使用 `{ "action":"new_project", "prompt":"做个页面" }`；修改使用 `{ "action":"message", "task_ref":"task_...", "prompt":"按钮改红" }`。返回 HTTP 202 和完整受理回执。消息目标和展示任务在联调页面分别选择，不能从当前画面猜测发送目标。任务进入 idle 后，展示页会自动尝试下载并打开本轮 HTML 产物；下一轮收到新的 `user.message` 或重新进入运行状态时，页面清空旧预览，等待新一轮结束后再尝试。没有 HTML 产物时继续显示事件时间线。
 
 ## AgentAPI 适配与 credential
 

@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/config"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/devicedisplay"
@@ -134,6 +136,7 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 	})
 	mux.Handle("GET /display/sessions", displaySessions(c))
 	mux.Handle("GET /display/events", displayEvents(c))
+	mux.Handle("POST /display/preview", displayPreview(c))
 	mux.Handle("GET /display/", http.StripPrefix("/display/", devicedisplay.StaticHandler()))
 
 	if cfg.DevTools {
@@ -310,6 +313,34 @@ func displayEvents(c *session.Controller) http.Handler {
 		if err != nil && r.Context().Err() == nil {
 			slog.Debug("public display stream closed", "task_ref", ref, "error", err)
 		}
+	})
+}
+
+// displayPreview is the public, read-only display counterpart to the
+// authenticated task preview endpoint. The task_ref in a display URL is the
+// same short-lived in-memory capability used by /display/events; it contains
+// no AgentAPI credential. The browser calls this only after an idle event.
+func displayPreview(c *session.Controller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			TaskRef string `json:"task_ref"`
+		}
+		if decode(w, r, &in) != nil || in.TaskRef == "" {
+			failure(w, http.StatusBadRequest, "无效展示任务")
+			return
+		}
+		result, err := c.Preview(r.Context(), in.TaskRef)
+		if err != nil {
+			if errors.Is(err, session.ErrReference) || agentapi.IsStatus(err, http.StatusNotFound) {
+				taskFailure(w, err)
+				return
+			}
+			// A missing HTML export is expected for some tasks. Return a
+			// non-error response so the page can retry while an export settles.
+			JSON(w, http.StatusOK, map[string]any{"available": false, "reason": err.Error()})
+			return
+		}
+		JSON(w, http.StatusOK, map[string]any{"available": true, "result_url": result})
 	})
 }
 

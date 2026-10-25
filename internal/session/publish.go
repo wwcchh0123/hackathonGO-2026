@@ -8,7 +8,9 @@ import (
 	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
 )
 
-// Preview is explicit and bounded. Querying a task never downloads its files.
+// Preview is bounded and cached for the current task round. Querying a task
+// never downloads its files; the public display page calls this method only
+// after the session becomes idle.
 func (c *Controller) Preview(ctx context.Context, ref string) (string, error) {
 	select {
 	case c.previewing <- struct{}{}:
@@ -28,6 +30,14 @@ func (c *Controller) Preview(ctx context.Context, ref string) (string, error) {
 	if err != nil {
 		c.mu.Unlock()
 		return "", err
+	}
+	// A display page polls while an idle session settles. Reuse the published
+	// URL so those polls do not download the same export repeatedly. A new
+	// command increments generation and clears resultURL before it starts.
+	if t.resultURL != "" && c.store.Available(t.resultURL) {
+		result := t.resultURL
+		c.mu.Unlock()
+		return result, nil
 	}
 	generation := t.generation
 	viewGeneration := c.viewGeneration

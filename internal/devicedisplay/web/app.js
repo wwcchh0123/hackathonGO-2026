@@ -19,6 +19,10 @@ const state = {
   total: 0,
   expanded: new Set(),
   lastRenderAt: 0,
+  previewURL: '',
+  previewBusy: false,
+  previewAttempts: 0,
+  previewTimer: null,
 };
 
 function esc(value = '') {
@@ -173,6 +177,96 @@ function updateURL(taskRef) {
   window.history.replaceState({}, '', next);
 }
 
+function setPreviewShell(message = 'Checking exported files…') {
+  $('preview-pane').hidden = false;
+  $('preview-frame').hidden = true;
+  $('preview-placeholder').hidden = false;
+  $('preview-status').textContent = message;
+}
+
+function previewSource(url) {
+  try {
+    const result = new URL(url, window.location.href);
+    // The result is always published by this control service. Loading the
+    // same path from the page's current origin avoids a second ngrok
+    // interstitial in desktop browsers, while the device still requests the
+    // exact same path through its already-bypassed public display page.
+    if (result.pathname.startsWith('/results/')) {
+      const current = new URL(window.location.href);
+      result.protocol = current.protocol;
+      result.host = current.host;
+    }
+    return result.href;
+  } catch {
+    return url;
+  }
+}
+
+function showPreview(url) {
+  if (!url) return;
+  const source = previewSource(url);
+  state.previewURL = url;
+  $('preview-pane').hidden = false;
+  $('preview-frame').hidden = false;
+  $('preview-placeholder').hidden = true;
+  $('preview-status').textContent = 'index.html · ready to explore';
+  if ($('preview-frame').src !== source) $('preview-frame').src = source;
+}
+
+function clearPreview() {
+  if (state.previewTimer) window.clearTimeout(state.previewTimer);
+  state.previewTimer = null;
+  state.previewURL = '';
+  state.previewAttempts = 0;
+  state.previewBusy = false;
+  $('preview-frame').src = 'about:blank';
+  $('preview-frame').hidden = true;
+  $('preview-placeholder').hidden = false;
+  $('preview-placeholder').querySelector('strong').textContent = 'Preparing preview';
+  $('preview-placeholder').querySelector('span').textContent = 'Looking for the latest index.html export.';
+  $('preview-pane').hidden = true;
+}
+
+async function requestPreview() {
+  if (!state.taskRef || state.previewBusy || state.previewURL || state.status !== 'idle') return;
+  if (state.previewAttempts >= 4) return;
+  const taskRef = state.taskRef;
+  state.previewBusy = true;
+  state.previewAttempts += 1;
+  setPreviewShell(state.previewAttempts === 1 ? 'Checking exported files…' : 'Waiting for the latest export…');
+  try {
+    const response = await fetch('./preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_ref: state.taskRef }),
+      cache: 'no-store',
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    if (state.taskRef !== taskRef || state.status !== 'idle') return;
+    if (result.available && result.result_url) {
+      showPreview(result.result_url);
+      return;
+    }
+    if (state.previewAttempts < 4) {
+      $('preview-status').textContent = 'Export is still settling…';
+      state.previewTimer = window.setTimeout(() => { state.previewTimer = null; requestPreview(); }, 3000);
+    } else {
+      $('preview-status').textContent = 'No index.html preview in this round';
+      $('preview-placeholder').querySelector('strong').textContent = 'No preview available';
+      $('preview-placeholder').querySelector('span').textContent = 'This task did not publish an HTML result.';
+    }
+  } catch (error) {
+    if (state.taskRef !== taskRef || state.status !== 'idle') return;
+    $('preview-status').textContent = `Preview unavailable · ${short(error?.message || 'retry later', 80)}`;
+    if (state.previewAttempts < 4) {
+      state.previewTimer = window.setTimeout(() => { state.previewTimer = null; requestPreview(); }, 3000);
+    }
+  } finally {
+    state.previewBusy = false;
+  }
+}
+
 function applySelectedTask() {
   const task = state.selectedTask;
   const title = task ? taskTitle(task) : state.taskRef ? `Session ${state.taskRef.slice(-8)}` : 'Choose a session';
@@ -184,6 +278,7 @@ function applySelectedTask() {
 }
 
 function resetView() {
+  clearPreview();
   state.events = [];
   state.seen.clear();
   state.total = 0;
@@ -413,11 +508,14 @@ function renderTimeline() {
 
 function applySnapshot(snapshot) {
   if (snapshot.status) {
+    if (snapshot.status === 'running' || snapshot.status === 'rescheduling') clearPreview();
     setStatus(snapshot.status);
     if (state.selectedTask) state.selectedTask = { ...state.selectedTask, status: snapshot.status };
   }
   if (snapshot.session_id) $('session-id').textContent = snapshot.session_id.slice(0, 18);
   if (snapshot.started_at) $('time-range').textContent = `${timeOf(snapshot.started_at)} — ${timeOf(snapshot.ended_at)}`;
+  if (snapshot.result_url) showPreview(snapshot.result_url);
+  if (snapshot.status === 'idle') requestPreview();
 }
 
 function applyMeta(meta) {
@@ -432,11 +530,26 @@ function addEvent(event) {
   if (!event || typeof event !== 'object' || (event.id && state.seen.has(event.id))) return;
   if (event.id) state.seen.add(event.id);
   state.events.push(event);
-  if (event.type === 'session.status_running' || event.type === 'session.status_rescheduled') setStatus('running');
-  if (event.type === 'session.status_idle') setStatus('idle');
+  if (event.type === 'session.status_running' || event.type === 'session.status_rescheduled') {
+    clearPreview();
+    setStatus('running');
+    state.previewAttempts = 0;
+  }
+  if (event.type === 'user.message') {
+    clearPreview();
+    state.previewAttempts = 0;
+  }
+  if (event.type === 'session.status_idle') {
+    setStatus('idle');
+    requestPreview();
+  }
   if (event.type === 'session.status_terminated') setStatus('terminated');
   renderTimeline();
 }
+
+$('preview-close').addEventListener('click', () => {
+  $('preview-pane').hidden = true;
+});
 
 function connectEvents(taskRef) {
   if (!taskRef) return;

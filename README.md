@@ -95,7 +95,7 @@ make build run
 
 在灵矽后台配置 MCP URL `https://你的服务域名/mcp`。同一地址支持当前灵矽使用的 Streamable HTTP（`POST /mcp`）和旧版 SSE（`GET /mcp` → `POST /mcp/message`）；后台即使将字段标为 SSE URL，也使用此地址。管理端初始化和列举工具无需设备 ID；真正调用工具时，`X-Linx-Device-Id` 须与 `DEVICE_ID` 一致。网页体验的虚拟设备可发现工具，但不能替代已绑定的 Mac 设备调用工具。`X-Linx-Session-Id` 用于对话内默认发送目标、日志和五秒去重；所有 MCP HTTP 请求均使用独立的 CONTROL_TOKEN Bearer 鉴权。当前原型仅支持一个配置的设备。反向代理允许 WebSocket、关闭 SSE 缓冲，读超时至少十分钟；不启用要求客户端回复 ping 的 MCP KeepAlive。配置和智能体提示词见 [协议文档](docs/protocol.md#灵矽配置与部署)。
 
-让 agent 把最终静态网站（`index.html` 和相对路径资源）导出到 `/mnt/session/outputs/`，设备明确请求预览时，服务端经 Files API 有界下载并托管。不启动任意沙箱端口，不执行构建，也不解压归档文件。需要 Node/Vite 的项目应由 agent 在沙箱构建后导出静态文件。
+让 agent 把最终静态网站（优先是 `index.html` 和相对路径资源）导出到 `/mnt/session/outputs/`。每一轮任务进入 idle 后，展示页会自动经 Files API 有界下载 HTML 并托管，在 CodeAgent 风格的右侧预览面板打开；下一轮开始时清空旧预览。没有 HTML 产物时继续显示事件，不影响任务状态。不启动任意沙箱端口，不执行构建，也不解压归档文件。需要 Node/Vite 的项目应由 agent 在沙箱构建后导出静态文件。
 
 手机访问结果需要将 `PUBLIC_URL` 改为手机可访问的服务地址；若从局域网访问，也要相应设置 `LISTEN_ADDR`。二维码等硬件展示细节后续由设备端实现。
 

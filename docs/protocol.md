@@ -78,7 +78,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 私有自定义 MCP：URL `https://<域名>/mcp`，Header `Authorization: Bearer <CONTROL_TOKEN>`。DEVICE_ID 必须与 Mac 绑定身份匹配；选择“统一意图识别（Function Call）”，重新发现控制 MCP 的四个工具和设备 MCP 的七个工具并保存关联。工具结果 JSON text 在目标灵矽部署联调通过前，不声称真实语音端已经验证。
 
-角色介绍完整内容见 [灵汐提示词](linxi-agent-prompt.txt)，与智控台保存的文本保持一致。简短状态查询使用 `get_task`；执行原因和实现细节通过 `send_message` 询问对应任务，再核对 `command_id` 和本轮输入之后的新消息。展示页 URL 用于确定当前被问到的任务，不复用另一个任务的发送目标。
+角色介绍完整内容见 [灵汐提示词](linxi-agent-prompt.txt)，与智控台保存的文本保持一致。灵汐负责语音接待、原话转达、任务选择、状态查询和屏幕操作；GitHub Issue/PR、编程需求及技术问答的理解与执行交给云端。已有任务原话 `send_message`；独立新任务或没有可复用任务时原话 `new_task`。转达保留地址、编号和限制，不自行解读 Issue、补充方案或扩大范围。简短状态查询使用 `get_task`；发送后核对 `command_id` 和本轮输入之后的新消息再转述。展示页 URL 用于确定当前被问到的任务，不复用另一个任务的发送目标。
 
 页面交互优先 `capture_screen`：一次读取截图和结构，有明确 ID 就点击并检查变化。回复默认一两句，不朗读任务或元素编号；能展开卡片、滚动到证据或显示作品的，实际操作给用户看。
 

@@ -205,7 +205,25 @@ func displayURL(publicURL, taskRef string) string {
 	if strings.TrimSpace(publicURL) == "" || strings.TrimSpace(taskRef) == "" {
 		return ""
 	}
-	return strings.TrimRight(publicURL, "/") + "/display/?task_ref=" + url.QueryEscape(taskRef)
+	page, err := url.Parse(strings.TrimRight(publicURL, "/") + "/display/")
+	if err != nil {
+		return ""
+	}
+	query := page.Query()
+	query.Set("task_ref", taskRef)
+	// ngrok's free browser interstitial is bypassed by this query parameter.
+	// Keep it in the returned URL so both the device Chromium and a human
+	// opening the same display link avoid the interstitial.
+	if isNgrokHost(page.Hostname()) {
+		query.Set("ngrok-skip-browser-warning", "true")
+	}
+	page.RawQuery = query.Encode()
+	return page.String()
+}
+
+func isNgrokHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return strings.HasSuffix(host, ".ngrok-free.dev") || strings.HasSuffix(host, ".ngrok.app") || strings.HasSuffix(host, ".ngrok.io")
 }
 func requestIdentity(r *mcp.CallToolRequest) identity {
 	meta, _ := r.Params.Meta[identityMeta].(map[string]any)

@@ -40,7 +40,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 成功结果以 MCP `content[0].text` 中的 **JSON** 返回；不设置 `structuredContent/outputSchema`。灵矽读取 JSON 后生成一句口语回复，不朗读编号、JSON 或链接。业务拒绝为 `isError=true` 和简短原因。修改性工具只做有界内存受理，不等待上游，延迟目标仍为 P99 < 300 ms；查询会访问上游，单次读取预算默认 10 秒。
 
-配置 `PUBLIC_URL` 后，`new_task`、`send_message` 和 `get_task` 的 JSON 结果附带 `display_url`。这是按 `task_ref` 绑定的公开只读展示页，灵矽 Agent 必须把完整值原样传给独立设备 MCP 的 `cast_screen`。创建任务是异步的，设备可以先打开地址；展示页会在云端 Session 建立后自动重连。`display_url` 不包含 AgentAPI Key、CONTROL_TOKEN 或灵矽身份。
+配置 `PUBLIC_URL` 后，`new_task`、`send_message` 和 `get_task` 的 JSON 结果附带 `display_url`。这是按 `task_ref` 绑定的公开只读展示页，灵矽 Agent 必须把完整值原样传给独立设备 MCP 的 `cast_screen`。当 `PUBLIC_URL` 使用 `*.ngrok-free.dev`、`*.ngrok.app` 或 `*.ngrok.io` 时，服务自动附加 `ngrok-skip-browser-warning=true`，避免设备 Chromium 被 ngrok 免费域名提示页拦截。创建任务是异步的，设备可以先打开地址；展示页会在云端 Session 建立后自动重连。`display_url` 不包含 AgentAPI Key、CONTROL_TOKEN 或灵矽身份。
 
 ```json
 {"accepted":true,"message":"已受理，请查询任务确认提交和执行结果","task_ref":"task_...","command_id":"cmd_..."}

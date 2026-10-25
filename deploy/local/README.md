@@ -72,6 +72,6 @@ DOUBLETAKE_BIN=doubletake
 设备 MCP：https://<ngrok-domain>/device/mcp
 ```
 
-调用控制 MCP 的 `new_task` 或 `send_message` 后，从 JSON 结果读取 `display_url`，立即把完整 URL 原样传给设备 MCP 的 `cast_screen`。用户要求切换历史任务时先调用 `list_tasks`，根据标题、时间和摘要选择明确的 `task_ref`，再调用 `get_task` 取得对应 `display_url`，最后把地址交给 `cast_screen`。`get_task` 只查询任务，不改变消息发送目标；`stop_cast` 只停止投屏，不停止 AgentAPI 任务。不要把控制令牌或 AgentAPI Key 填入工具参数，也不要把灵矽语音 session_id 当成 AgentAPI 的 task_ref。
+调用控制 MCP 的 `new_task` 或 `send_message` 后，从 JSON 结果读取 `display_url`，立即把完整 URL 原样传给设备 MCP 的 `cast_screen`。当 `PUBLIC_URL` 是 ngrok 域名时，服务会自动在 `display_url` 上附加 `ngrok-skip-browser-warning=true`，避免 Chromium 打开 ngrok 免费域名时停在浏览器提示页。用户要求切换历史任务时先调用 `list_tasks`，根据标题、时间和摘要选择明确的 `task_ref`，再调用 `get_task` 取得对应 `display_url`，最后把地址交给 `cast_screen`。`get_task` 只查询任务，不改变消息发送目标；`stop_cast` 只停止投屏，不停止 AgentAPI 任务。不要把控制令牌或 AgentAPI Key 填入工具参数，也不要把灵矽语音 session_id 当成 AgentAPI 的 task_ref。
 
 设备 MCP 的旧版 SSE endpoint 会由 nginx 的 `/device` 前缀正确回写为 `/device/mcp/message`；不要把设备 MCP 直接和控制 MCP 共用 `/mcp` 路径。

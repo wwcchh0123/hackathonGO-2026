@@ -12,6 +12,9 @@ func TestDisplayURLUsesPublicSessionPage(t *testing.T) {
 	if got := displayURL("https://work.example/", "task_中文"); got != "https://work.example/display/?task_ref=task_%E4%B8%AD%E6%96%87" {
 		t.Fatalf("display URL: %q", got)
 	}
+	if got := displayURL("https://demo.ngrok-free.dev/", "task_1"); got != "https://demo.ngrok-free.dev/display/?ngrok-skip-browser-warning=true&task_ref=task_1" {
+		t.Fatalf("ngrok display URL: %q", got)
+	}
 	if got := displayURL("", "ses_1"); got != "" {
 		t.Fatalf("empty public URL should disable display links: %q", got)
 	}

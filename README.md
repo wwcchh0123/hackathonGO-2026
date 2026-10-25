@@ -87,7 +87,7 @@ make build run
 
 云端 MCP 按 [issue #18](https://github.com/wwcchh0123/hackathonGO-2026/issues/18) 提供 `list_tasks`、`get_task`、`send_message`、`new_task` 四个工具，替换旧 `get_status/start_new_project`。成功结果为 JSON text content；异步回执返回 `task_ref/command_id`，用详情查询确认提交结果。列表按当前授权身份查询单页，历史任务不依赖本地缓存；实时 SSE 和预览下载均由设备按需触发。`AGENTAPI_VAULT_IDS` 可配置 GitHub credential 的 Vault 引用，由 Agent 在授权范围自行定位仓库。
 
-`new_task`、`send_message` 和 `get_task` 的 JSON 结果会在配置 `PUBLIC_URL` 后附带 `display_url`，例如 `https://example.test/display/?task_ref=task_...`。创建任务是异步的，设备可以先打开该 URL；展示页会在云端 Session 建立后通过 EventSource 自动重连。多个任务始终按明确的 `task_ref` 展示和切换，不依赖“当前 session”猜测。
+`new_task`、`send_message` 和 `get_task` 的 JSON 结果会在配置 `PUBLIC_URL` 后附带 `display_url`，例如 `https://example.test/display/?task_ref=task_...`。当地址是 ngrok 域名时，URL 还会自动带 `ngrok-skip-browser-warning=true`，设备 Chromium 不会停在 ngrok 浏览器提示页。创建任务是异步的，设备可以先打开该 URL；展示页会在云端 Session 建立后通过 EventSource 自动重连。多个任务始终按明确的 `task_ref` 展示和切换，不依赖“当前 session”猜测。
 
 模拟树莓派设备的启动、nginx 路径分流、ngrok 单端点和 AirPlay 默认值见 [`deploy/local/README.md`](deploy/local/README.md)。设备 MCP 使用 `/device/mcp`，控制 MCP 使用 `/mcp`；设备 MCP 只提供 `scan_screens`、`cast_screen`、`stop_cast`，投屏停止不会停止 AgentAPI 任务。
 

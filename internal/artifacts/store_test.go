@@ -22,6 +22,17 @@ func TestPublishRejectsEscapingArtifactPaths(t *testing.T) {
 	}
 }
 
+func TestPublishAddsNgrokBrowserBypass(t *testing.T) {
+	store := Store{Root: t.TempDir(), PublicURL: "https://demo.ngrok-free.dev"}
+	result, err := store.Publish(context.Background(), []agentapi.File{{Path: "index.html", Data: []byte("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "ngrok-skip-browser-warning=true") {
+		t.Fatalf("missing ngrok browser bypass: %s", result)
+	}
+}
+
 func TestPublicationsAreBoundedAndDiscardValidated(t *testing.T) {
 	store := Store{Root: t.TempDir(), PublicURL: "http://example.test"}
 	var result string

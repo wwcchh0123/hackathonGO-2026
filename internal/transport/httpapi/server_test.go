@@ -96,7 +96,7 @@ func waitDetail(t *testing.T, c *session.Controller, r session.Receipt) session.
 	t.Fatal("command not confirmed")
 	return session.Detail{}
 }
-func TestMCPToIndependentDeviceStreamAndExplicitPreview(t *testing.T) {
+func TestMCPToIndependentDeviceStreamAndAutomaticPreview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	mock := agentapi.NewMock(ctx)
@@ -172,9 +172,33 @@ func TestMCPToIndependentDeviceStreamAndExplicitPreview(t *testing.T) {
 	if !errors.Is(err, stop) || count < 5 {
 		t.Fatal(count, err)
 	}
+	// The public display page can trigger its idle-round preview without the
+	// control token. The returned URL is the same cached publication used by
+	// the authenticated explicit endpoint below.
+	previewRequest, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/display/preview", strings.NewReader(`{"task_ref":"`+r.TaskRef+`"}`))
+	previewRequest.Header.Set("Content-Type", "application/json")
+	previewResponse, err := http.DefaultClient.Do(previewRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewRaw, _ := io.ReadAll(previewResponse.Body)
+	previewResponse.Body.Close()
+	if previewResponse.StatusCode != http.StatusOK {
+		t.Fatalf("display preview: %d %s", previewResponse.StatusCode, previewRaw)
+	}
+	var automatic struct {
+		Available bool   `json:"available"`
+		ResultURL string `json:"result_url"`
+	}
+	if err := json.Unmarshal(previewRaw, &automatic); err != nil || !automatic.Available || automatic.ResultURL == "" {
+		t.Fatalf("automatic preview: %s (%v)", previewRaw, err)
+	}
 	raw := request("POST", "/api/tasks/"+r.TaskRef+"/preview", "{}", 200)
 	var preview map[string]string
 	_ = json.Unmarshal(raw, &preview)
+	if preview["result_url"] != automatic.ResultURL {
+		t.Fatalf("preview was downloaded twice: %q != %q", preview["result_url"], automatic.ResultURL)
+	}
 	page, err := http.Get(preview["result_url"])
 	if err != nil {
 		t.Fatal(err)
@@ -408,5 +432,89 @@ func TestMCPThroughReverseProxy(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != 202 {
 		t.Fatalf("proxied POST: %d", response.StatusCode)
+	}
+}
+
+func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mock := agentapi.NewMock(ctx)
+	mock.Step = time.Millisecond
+	ts := httptest.NewUnstartedServer(nil)
+	base := "http://" + ts.Listener.Addr().String()
+	cfg := config.Config{Mode: "mock", DeviceID: "test-device", DataDir: t.TempDir(), PublicURL: base}
+	c := session.New(ctx, mock, device.NewState(cfg.DeviceID), &artifacts.Store{Root: cfg.DataDir, PublicURL: base})
+	ts.Config.Handler = Handler(cfg, c)
+	ts.Start()
+	defer ts.Close()
+	defer func() { c.Wait() }()
+
+	receipt, err := c.Submit(session.Command{Action: "start", Prompt: "展示测试"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDetail(t, c, receipt)
+
+	page, err := http.Get(ts.URL + "/display/?task_ref=" + url.QueryEscape(receipt.TaskRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(pageBody), "CodeAgent") {
+		t.Fatalf("display page: %d %s", page.StatusCode, pageBody)
+	}
+
+	stream, err := http.Get(ts.URL + "/display/events?task_ref=" + url.QueryEscape(receipt.TaskRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	if stream.StatusCode != http.StatusOK || stream.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("display stream: %d %q", stream.StatusCode, stream.Header.Get("Content-Type"))
+	}
+	line, err := bufio.NewReader(stream.Body).ReadString('\n')
+	if err != nil || line != "event: device-snapshot\n" {
+		t.Fatalf("display snapshot: %q (%v)", line, err)
+	}
+}
+
+func TestPublicDisplaySessionListIsReadOnlyAndUnprotected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mock := agentapi.NewMock(ctx)
+	mock.Step = time.Millisecond
+	c := session.New(ctx, mock, device.NewState("test-device"), &artifacts.Store{Root: t.TempDir()})
+	defer func() {
+		cancel()
+		c.Wait()
+	}()
+	first, err := c.Submit(session.Command{Action: "start", Prompt: "整理发布说明"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Submit(session.Command{Action: "start", Prompt: "检查移动端布局"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDetail(t, c, first)
+	waitDetail(t, c, second)
+
+	h := Handler(config.Config{Mode: "http", DeviceID: "test-device", Token: "must-not-be-needed", DataDir: t.TempDir()}, c)
+	req := httptest.NewRequest(http.MethodGet, "/display/sessions?limit=10", nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("display session list: %d %s", res.Code, res.Body.String())
+	}
+	var page displaySessionPage
+	if err := json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Data) != 2 || page.Data[0].TaskRef == "" || page.Data[1].TaskRef == "" {
+		t.Fatalf("unexpected display sessions: %+v", page)
+	}
+	if strings.Contains(res.Body.String(), "must-not-be-needed") || strings.Contains(res.Body.String(), "events") {
+		t.Fatalf("display session list leaked protected or event data: %s", res.Body.String())
 	}
 }

@@ -80,7 +80,23 @@ func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, err
 		_ = os.RemoveAll(filepath.Join(s.Root, ready[i].name))
 	}
 	resultPath := (&url.URL{Path: "/results/" + token + "/" + entry}).EscapedPath()
-	return strings.TrimRight(s.PublicURL, "/") + resultPath, nil
+	resultURL, err := url.Parse(strings.TrimRight(s.PublicURL, "/") + resultPath)
+	if err != nil {
+		return "", err
+	}
+	if isNgrokHost(resultURL.Hostname()) {
+		query := resultURL.Query()
+		// ngrok's free browser interstitial also applies to nested iframe
+		// navigations, so the published HTML URL needs the bypass itself.
+		query.Set("ngrok-skip-browser-warning", "true")
+		resultURL.RawQuery = query.Encode()
+	}
+	return resultURL.String(), nil
+}
+
+func isNgrokHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return strings.HasSuffix(host, ".ngrok-free.dev") || strings.HasSuffix(host, ".ngrok.app") || strings.HasSuffix(host, ".ngrok.io")
 }
 
 // Available lets an evicted local preview fall back to an explicit fresh fetch.

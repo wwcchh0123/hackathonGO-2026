@@ -23,6 +23,19 @@ func TestLoadConfigurationAndVaultReferences(t *testing.T) {
 		t.Setenv(test.key, "")
 	}
 	t.Setenv("AGENTAPI_MODE", "http")
+	t.Setenv("PUBLIC_URL", "http://127.0.0.1:18080")
+	for _, key := range []string{"CONTROL_TOKEN", "AGENTAPI_API_KEY", "AGENTAPI_AGENT_ID", "AGENTAPI_ENVIRONMENT_ID"} {
+		t.Setenv(key, "test")
+	}
+	t.Setenv("AGENTAPI_BASE_URL", "https://agent.example.test")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted loopback PUBLIC_URL in http mode")
+	}
+	for _, key := range []string{"CONTROL_TOKEN", "AGENTAPI_API_KEY", "AGENTAPI_AGENT_ID", "AGENTAPI_ENVIRONMENT_ID", "AGENTAPI_BASE_URL"} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("PUBLIC_URL", "")
+	t.Setenv("AGENTAPI_MODE", "http")
 	if _, err := Load(); err == nil {
 		t.Fatal("accepted missing HTTP configuration")
 	}
@@ -30,6 +43,7 @@ func TestLoadConfigurationAndVaultReferences(t *testing.T) {
 		t.Setenv(key, "test")
 	}
 	t.Setenv("AGENTAPI_BASE_URL", "https://agent.example.test")
+	t.Setenv("PUBLIC_URL", "https://display.example.test")
 	t.Setenv("AGENTAPI_AGENT_VERSION", "7")
 	t.Setenv("DEV_TOOLS", "false")
 	c, err = Load()

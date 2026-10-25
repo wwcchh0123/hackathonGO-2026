@@ -137,26 +137,28 @@ func (c *Controller) ListTasks(ctx context.Context, o ListOptions) (TaskPage, er
 		}
 		out.Data[i] = taskCard(s, ref)
 	}
-	var wg sync.WaitGroup
-	limit := make(chan struct{}, 4)
-	for i := range out.Data {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			select {
-			case limit <- struct{}{}:
-				defer func() { <-limit }()
-			case <-ctx.Done():
-				out.Data[i].SummaryUnavailable = true
-				return
+	if !o.SkipSummary {
+		var wg sync.WaitGroup
+		limit := make(chan struct{}, 4)
+		for i := range out.Data {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				select {
+				case limit <- struct{}{}:
+					defer func() { <-limit }()
+				case <-ctx.Done():
+					out.Data[i].SummaryUnavailable = true
+					return
+				}
+				out.Data[i].Summary, out.Data[i].SummaryUnavailable = c.summary(ctx, out.Data[i].SessionID)
+			}(i)
+		}
+		wg.Wait()
+		for _, t := range out.Data {
+			if t.SummaryUnavailable {
+				out.Partial = true
 			}
-			out.Data[i].Summary, out.Data[i].SummaryUnavailable = c.summary(ctx, out.Data[i].SessionID)
-		}(i)
-	}
-	wg.Wait()
-	for _, t := range out.Data {
-		if t.SummaryUnavailable {
-			out.Partial = true
 		}
 	}
 	return out, nil

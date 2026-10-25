@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#191919">
+  <title>CodeAgent · Linxi display</title>
+  <link rel="stylesheet" href="./styles.css?v=portal-4">
+  <script defer src="./app.js?v=portal-4"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="session-sidebar" aria-label="Session list">
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <div>
+          <strong>CodeAgent</strong>
+          <span>LINXI DISPLAY</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section-heading">
+        <span>Sessions</span>
+        <span id="session-list-count">0</span>
+      </div>
+      <div class="sidebar-sync">
+        <span id="session-sync">syncing</span>
+        <span class="polling"><i></i> 3s</span>
+      </div>
+      <nav id="session-list" class="session-list">
+        <div class="list-empty">
+          <span class="list-empty-mark">◌</span>
+          <strong>No sessions yet</strong>
+          <span>New tasks will appear here.</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span>AgentAPI session stream</span>
+        <span class="sidebar-live"><i></i><span id="sidebar-connection">connecting</span></span>
+      </div>
+    </aside>
+
+    <main class="run-panel">
+      <header class="run-header">
+        <div class="run-heading">
+          <div class="run-kicker">SESSION <span>/</span> <code id="session-id">waiting</code></div>
+          <h1 id="stage-title">Choose a session</h1>
+          <div class="run-subline">
+            <span id="runtime">Claude Code</span>
+            <span class="subline-dot">·</span>
+            <span id="connection">connecting</span>
+          </div>
+        </div>
+        <div class="run-header-meta">
+          <span id="status-pill" class="status-pill"><i></i><span id="status">READY</span></span>
+          <time id="clock">--:--:--</time>
+        </div>
+      </header>
+
+      <div class="run-content">
+        <section class="timeline-column">
+          <div class="run-meta-row">
+            <div class="run-summary">
+              <span class="summary-chevron">›</span>
+              <span id="run-summary-label">Ready</span>
+              <span class="summary-separator">·</span>
+              <span id="run-summary-count">0 steps</span>
+            </div>
+            <div class="display-status">
+              <span class="display-status-icon" aria-hidden="true">▱</span>
+              <span>AirPlay display</span>
+              <span class="display-status-dot"></span>
+            </div>
+          </div>
+
+          <section id="timeline" class="timeline" aria-live="polite">
+            <div id="empty" class="empty-state">
+              <div class="empty-icon">✦</div>
+              <strong>Choose a session to follow</strong>
+              <span>The selected AgentAPI run will appear here.</span>
+            </div>
+          </section>
+
+          <footer class="run-footer">
+            <span id="source">AgentAPI session events</span>
+            <span id="time-range">—</span>
+            <span><span id="event-count">0</span> visible steps</span>
+          </footer>
+        </section>
+
+        <aside id="preview-pane" class="preview-pane" hidden aria-label="Result preview">
+          <div class="preview-header">
+            <div>
+              <div class="preview-kicker">OUTPUT <span>/</span> PREVIEW</div>
+              <strong id="preview-title">Live result</strong>
+            </div>
+            <button id="preview-close" class="preview-close" type="button" aria-label="Close preview">×</button>
+          </div>
+          <div id="preview-status" class="preview-status">Checking exported files…</div>
+          <div class="preview-frame-wrap">
+            <div id="preview-placeholder" class="preview-placeholder">
+              <div class="preview-placeholder-icon">⌁</div>
+              <strong>Preparing preview</strong>
+              <span>Looking for the latest index.html export.</span>
+            </div>
+            <iframe id="preview-frame" title="Session result preview" sandbox="allow-forms allow-modals allow-popups allow-scripts" loading="lazy" hidden></iframe>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

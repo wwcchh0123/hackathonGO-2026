@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,12 +15,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/config"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/controlplane"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/devicedisplay"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
 	cloudmcp "github.com/wwcchh0123/hackathonGO-2026/internal/transport/mcp"
 )
@@ -127,6 +133,20 @@ func handler(cfg config.Config, c *session.Controller, manager *controlplane.Man
 		}
 	})))
 	taskAPI(mux, protect, c)
+	// The device browser gets a public, task-scoped URL. It intentionally does
+	// not use protect: a browser launched by the hardware cannot safely carry
+	// the control token, and the task_ref is only an in-memory read-only key.
+	mux.HandleFunc("GET /display", func(w http.ResponseWriter, r *http.Request) {
+		target := "/display/"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	})
+	mux.Handle("GET /display/sessions", displaySessions(c))
+	mux.Handle("GET /display/events", displayEvents(c))
+	mux.Handle("POST /display/preview", displayPreview(c))
+	mux.Handle("GET /display/", http.StripPrefix("/display/", devicedisplay.StaticHandler()))
 	if manager != nil {
 		adminAPI(mux, protect, manager)
 	}
@@ -155,7 +175,7 @@ func handler(cfg config.Config, c *session.Controller, manager *controlplane.Man
 		}
 		controller, _ := manager.Controller(id)
 		return controller
-	})
+	}, cfg.PublicURL)
 	cloudWithIdentity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Cloud MCP accepts only its explicit Bearer credential, never browser cookies.
 		if cfg.Token != "" && !same(r.Header.Get("Authorization"), "Bearer "+cfg.Token) {
@@ -282,4 +302,180 @@ func handler(cfg config.Config, c *session.Controller, manager *controlplane.Man
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func displayEvents(c *session.Controller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ref := r.URL.Query().Get("task_ref")
+		if ref == "" {
+			failure(w, http.StatusBadRequest, "缺少 task_ref")
+			return
+		}
+		zero := 0
+		d, err := c.GetTask(r.Context(), ref, session.DetailOptions{EventsLimit: &zero})
+		if err != nil {
+			taskFailure(w, err)
+			return
+		}
+		observation, err := c.Observe(r.Context(), ref, r.Header.Get("Last-Event-ID"))
+		if err != nil {
+			taskFailure(w, err)
+			return
+		}
+		defer observation.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache, no-transform")
+		w.Header().Set("X-Accel-Buffering", "no")
+		rc := http.NewResponseController(w)
+		if rc.Flush() != nil {
+			return
+		}
+		snapshot := displaySnapshot(d)
+		if err := writeDisplayEvent(w, rc, "device-snapshot", "", snapshot); err != nil {
+			return
+		}
+		if err := writeDisplayEvent(w, rc, "session-meta", "", map[string]any{
+			"taskRef":   ref,
+			"sessionId": snapshot.SessionID,
+			"runtime":   d.Runtime,
+			"source":    "AgentAPI session event stream",
+		}); err != nil {
+			return
+		}
+		after := r.Header.Get("Last-Event-ID")
+		if after == "" {
+			after = r.URL.Query().Get("after")
+		}
+		err = observation.Run(after, func(f events.Frame) error {
+			return writeDisplayEvent(w, rc, "session-event", f.ID, f.Data)
+		})
+		if err != nil && r.Context().Err() == nil {
+			slog.Debug("public display stream closed", "task_ref", ref, "error", err)
+		}
+	})
+}
+
+// displayPreview is the public, read-only display counterpart to the
+// authenticated task preview endpoint. The task_ref in a display URL is the
+// same short-lived in-memory capability used by /display/events; it contains
+// no AgentAPI credential. The browser calls this only after an idle event.
+func displayPreview(c *session.Controller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			TaskRef string `json:"task_ref"`
+		}
+		if decode(w, r, &in) != nil || in.TaskRef == "" {
+			failure(w, http.StatusBadRequest, "无效展示任务")
+			return
+		}
+		result, err := c.Preview(r.Context(), in.TaskRef)
+		if err != nil {
+			if errors.Is(err, session.ErrReference) || agentapi.IsStatus(err, http.StatusNotFound) {
+				taskFailure(w, err)
+				return
+			}
+			// A missing HTML export is expected for some tasks. Return a
+			// non-error response so the page can retry while an export settles.
+			JSON(w, http.StatusOK, map[string]any{"available": false, "reason": err.Error()})
+			return
+		}
+		JSON(w, http.StatusOK, map[string]any{"available": true, "result_url": result})
+	})
+}
+
+// displaySessions exposes the minimal task index needed by the public kiosk.
+// The browser cannot carry CONTROL_TOKEN, so this endpoint is intentionally
+// separate from /api/tasks. It contains task references and presentation data,
+// while event contents remain behind the selected task's SSE stream.
+func displaySessions(c *session.Controller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := 20
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 50 {
+				failure(w, http.StatusBadRequest, "无效展示任务数量")
+				return
+			}
+			limit = parsed
+		}
+		page, err := c.ListTasks(r.Context(), session.ListOptions{Limit: limit, SkipSummary: true})
+		if err != nil {
+			taskFailure(w, err)
+			return
+		}
+		items := make([]displaySession, 0, len(page.Data))
+		for _, task := range page.Data {
+			items = append(items, displaySession{
+				TaskRef:   task.Ref,
+				SessionID: task.SessionID,
+				Title:     task.Title,
+				Status:    task.Status,
+				Runtime:   task.Runtime,
+				CreatedAt: task.CreatedAt,
+				UpdatedAt: task.UpdatedAt,
+				Archived:  task.Archived,
+			})
+		}
+		JSON(w, http.StatusOK, displaySessionPage{Data: items, HasMore: page.HasMore, NextPage: page.NextPage, QueriedAt: page.QueriedAt})
+	})
+}
+
+type displaySession struct {
+	TaskRef   string    `json:"task_ref"`
+	SessionID string    `json:"session_id,omitempty"`
+	Title     string    `json:"title"`
+	Status    string    `json:"status"`
+	Runtime   string    `json:"runtime,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Archived  bool      `json:"archived,omitempty"`
+}
+
+type displaySessionPage struct {
+	Data      []displaySession `json:"data"`
+	NextPage  string           `json:"next_page,omitempty"`
+	HasMore   bool             `json:"has_more"`
+	QueriedAt time.Time        `json:"queried_at"`
+}
+
+func displaySnapshot(d session.Detail) device.Snapshot {
+	snapshot := device.Snapshot{
+		TaskRef:    d.Ref,
+		SessionID:  d.SessionID,
+		Status:     d.Status,
+		Prompt:     d.Title,
+		StopReason: d.StopReason,
+		ResultURL:  d.ResultURL,
+	}
+	if d.Summary != nil {
+		snapshot.Summary = d.Summary.Text
+		snapshot.SummaryEventID = d.Summary.EventID
+		snapshot.SummaryTime = &d.Summary.Time
+	}
+	if d.Command != nil {
+		snapshot.CommandID = d.Command.ID
+		snapshot.CommandState = d.Command.State
+		snapshot.Error = d.Command.Error
+	}
+	return snapshot
+}
+
+func writeDisplayEvent(w http.ResponseWriter, rc *http.ResponseController, name, id string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := rc.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data); err != nil {
+		return err
+	}
+	return rc.Flush()
 }

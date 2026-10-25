@@ -58,7 +58,7 @@ go run ./cmd/voice -pair-only
 
 当前实现的是设备语音连接。控制服务仍是 `cmd/control`，默认独立监听 8080，可由灵矽云端 MCP 调用。语音客户端没有本地 Claude Code 进程，不处理编程权限或执行命令；真实编程需另外配置 AgentAPI，默认 Mock 只模拟开发过程。
 
-接编程工具时，把控制服务的 `DEVICE_ID` 配成这里显示的 `device_id`，在灵矽配置 `/mcp` 地址并关联智能体。服务同时支持 Streamable HTTP 和旧版 SSE，详见 [MCP 协议与配置](protocol.md#云端-mcp)。灵矽对话 session_id 与 AgentAPI session_id 是两套 ID。设备展示通道、编程事件 SSE、端侧 MCP 和 AirPlay 还没有加入此语音页面；hello 不会宣称支持端侧 MCP。
+接编程工具时，把控制服务的 `DEVICE_ID` 配成这里显示的 `device_id`，在灵矽配置控制 MCP `/mcp` 和设备 MCP `/device/mcp`，并关联智能体。服务同时支持 Streamable HTTP 和旧版 SSE，详见 [MCP 协议与配置](protocol.md#云端-mcp)。灵矽对话 session_id 与 AgentAPI session_id/task_ref 是三套不同的标识。控制 MCP 返回 `display_url` 后，智能体把它原样交给设备 MCP 的 `cast_screen`；设备浏览器渲染展示页并通过 AirPlay 镜像。
 
 ## 验证
 
@@ -70,7 +70,7 @@ node --test internal/voice/test/pcm.test.mjs
 
 默认控制服务测试不依赖 libopus。语音测试额外启用 `opus` 构建标签，覆盖真实编码/解码与 16/24 kHz 输出；其他测试使用本地 HTTP/WebSocket 假上游，覆盖激活码 → 绑定 → 获取 token、握手鉴权、hello 超时、完整语音桥、停止播报后丢弃旧音频、关闭页面取消激活、跨站请求和双窗口限制。浏览器重采样测试覆盖 16/44.1/48/96 kHz、跨回调连续性、PCM16 裁剪与末帧补零。Node 只用于这项测试，不参与应用运行或构建。
 
-2026-10-24 此前已使用真实绑定设备验证语音收发，并通过公网隧道收到灵矽对旧三个 MCP 工具的真实调用。Issue #18 的四工具已通过官方 SDK 回环和真实 AgentAPI HTTP 联调；本次没有可用的绑定设备身份目录，因此没有声称新四工具已在 Mac 语音端实测。真实 AirPlay 尚未完成联调。绑定身份和凭据均不入库。
+ASR/TTS、控制 MCP、设备 MCP 和本地浏览器渲染分别已有真实联调记录；完整语音任务链路必须以当前智控台账号重新连接后复验。控制 MCP 的 Bearer 令牌必须与本地 `CONTROL_TOKEN` 完全一致，角色配置保存后也必须断开并重新连接语音设备。AirPlay 接收端若离线，不能把 sender 重试误报为屏幕已显示。绑定身份和凭据均不入库。
 
 ## 常见问题
 
@@ -90,6 +90,6 @@ node --test internal/voice/test/pcm.test.mjs
 
 ## 多任务工具迁移（Issue #18）
 
-控制服务升级后，在灵矽管理端重新发现并保存 `list_tasks/get_task/send_message/new_task`，替换旧三个工具，提示词使用 [协议文档](protocol.md#灵矽配置与部署)。新回执含任务引用和命令编号，Agent 应读取 JSON 字段后简短转述；查询结果和旧消息摘录不作为本轮完成证明。工具失败或 unknown 时先查询，不自动重复提交。
+控制服务升级后，在灵矽管理端重新发现并保存控制 MCP 的 `list_tasks/get_task/send_message/new_task` 和设备 MCP 的 `cast_screen/scroll_screen/stop_cast/scan_screens`，替换旧工具，提示词使用 [协议文档](protocol.md#灵矽配置与部署)。新回执含任务引用和命令编号，Agent 应读取 JSON 字段后简短转述；查询结果和旧消息摘录不作为本轮完成证明。工具失败或 unknown 时先查询，不自动重复提交。
 
-Mac 语音桥继续只处理身份、音频和语音事件；本次没有把控制服务 devui 混入真实语音页面，也不通过 get_task 自动切换屏幕。任务展示通过独立设备接口明确选择。此前三工具的实测记录不代表新四工具已在真实语音端验证。
+Mac 语音桥只处理身份、音频和语音事件；云端 Agent 通过控制 MCP 创建、查询或继续任务，再把 `display_url` 交给独立设备 MCP 的 `cast_screen`。任务展示页支持多 Session，切换展示不改变消息发送目标。修改角色或 MCP 配置后，必须重新连接语音设备，不能用旧连接的工具缓存判断新配置是否生效。

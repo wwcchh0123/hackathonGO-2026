@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -39,14 +41,22 @@ func decodeArgs(raw json.RawMessage, target any) error {
 	}
 	return nil
 }
-func Handler(c *session.Controller) http.Handler {
-	return HandlerFor(func(string) *session.Controller { return c })
+
+// Handler keeps the single-controller entry point used by small embedders.
+// publicURL is optional for compatibility; when present, task mutations and
+// details include the URL that the device browser can open for projection.
+func Handler(c *session.Controller, publicURL ...string) http.Handler {
+	baseURL := ""
+	if len(publicURL) > 0 {
+		baseURL = publicURL[0]
+	}
+	return HandlerFor(func(string) *session.Controller { return c }, baseURL)
 }
 
 // HandlerFor keeps the MCP wire protocol independent from the control-plane
 // registry. The resolver is called only for tools/call and may route each
 // authenticated device to its own session controller.
-func HandlerFor(resolve func(string) *session.Controller) http.Handler {
+func HandlerFor(resolve func(string) *session.Controller, publicURL string) http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "linxi-workstation", Version: "0.3.0"}, nil)
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}
 	ref := map[string]any{"type": "string", "minLength": 1, "maxLength": 100}
@@ -58,10 +68,10 @@ func HandlerFor(resolve func(string) *session.Controller) http.Handler {
 		"get_task":     {"task_ref": ref, "command_id": str, "events_limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "events_page": str, "files_page": str},
 	}
 	descriptions := map[string]string{
-		"new_task":     "明确新建独立任务；不停止其他任务。返回 task_ref 和 command_id，accepted 仅表示已入队。接力历史任务时明确传 parent_task_ref。",
-		"send_message": "向明确的 task_ref 原话发送需求、修改、继续或暂停。省略引用仅复用同一灵矽对话最近一次写入目标；查询不改变目标。返回异步回执，请用 get_task 核对 command_id。",
-		"list_tasks":   "只读查询当前 AgentAPI 身份可见任务。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
-		"get_task":     "只读任务详情，包含云端状态、命令结果、消息时间、停止原因、事件和文件元信息。events_limit=0 只查状态和消息，不建事件流、不切屏、不下载预览。旧摘要不是本轮完成证明。",
+		"new_task":     "明确新建独立任务；不停止其他任务。返回 task_ref、command_id 和可直接投屏的 display_url，accepted 仅表示已入队。接力历史任务时明确传 parent_task_ref。",
+		"send_message": "向明确的 task_ref 原话发送需求、修改、继续或暂停。省略引用仅复用同一灵矽对话最近一次写入目标；查询不改变目标。返回异步回执和 display_url，请用 get_task 核对 command_id。",
+		"list_tasks":   "只读查询当前配置 Agent 的任务；不会返回同一 API Key 下其他 Agent 的 session。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
+		"get_task":     "只读任务详情，包含云端状态、命令结果、消息时间、停止原因、事件、文件元信息和可投屏 display_url。events_limit=0 只查状态和消息，不建事件流、不切屏、不下载预览。旧摘要不是本轮完成证明。",
 	}
 	for _, name := range []string{"list_tasks", "get_task", "send_message", "new_task"} {
 		required := []string{}
@@ -130,7 +140,7 @@ func HandlerFor(resolve func(string) *session.Controller) http.Handler {
 			if err != nil {
 				return textResult(err.Error(), true), nil
 			}
-			raw, err := json.Marshal(value)
+			raw, err := json.Marshal(withDisplayURL(value, publicURL))
 			if err != nil {
 				return textResult("无法编码工具结果", true), nil
 			}
@@ -192,6 +202,56 @@ func HandlerFor(resolve func(string) *session.Controller) http.Handler {
 		}
 	})
 }
+
+// These transport result wrappers keep the domain model independent from the
+// public hostname while giving the Linxi agent an exact URL to pass to the
+// independent device MCP. Embedding preserves the existing JSON shape.
+type receiptResult struct {
+	session.Receipt
+	DisplayURL string `json:"display_url,omitempty"`
+}
+
+type detailResult struct {
+	session.Detail
+	DisplayURL string `json:"display_url,omitempty"`
+}
+
+func withDisplayURL(value any, publicURL string) any {
+	switch v := value.(type) {
+	case session.Receipt:
+		return receiptResult{Receipt: v, DisplayURL: displayURL(publicURL, v.TaskRef)}
+	case session.Detail:
+		return detailResult{Detail: v, DisplayURL: displayURL(publicURL, v.Ref)}
+	default:
+		return value
+	}
+}
+
+func displayURL(publicURL, taskRef string) string {
+	if strings.TrimSpace(publicURL) == "" || strings.TrimSpace(taskRef) == "" {
+		return ""
+	}
+	page, err := url.Parse(strings.TrimRight(publicURL, "/") + "/display/")
+	if err != nil {
+		return ""
+	}
+	query := page.Query()
+	query.Set("task_ref", taskRef)
+	// ngrok's free browser interstitial honors this query parameter. The
+	// simulated device also uses a non-standard User-Agent because Chromium
+	// may follow redirects or request assets without preserving URL hints.
+	if isNgrokHost(page.Hostname()) {
+		query.Set("ngrok-skip-browser-warning", "true")
+	}
+	page.RawQuery = query.Encode()
+	return page.String()
+}
+
+func isNgrokHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return strings.HasSuffix(host, ".ngrok-free.dev") || strings.HasSuffix(host, ".ngrok.app") || strings.HasSuffix(host, ".ngrok.io")
+}
+
 func requestIdentity(r *mcp.CallToolRequest) identity {
 	meta, _ := r.Params.Meta[identityMeta].(map[string]any)
 	read := func(key string) string { v, _ := meta[key].(string); return v }

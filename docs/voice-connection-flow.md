@@ -1,6 +1,6 @@
 # 当前语音连接的整体逻辑
 
-本文对应 2026-10-24 的实现，说明从启动 Mac 客户端到听见灵矽回复的实际过程。安装和操作步骤见 [语音客户端说明](voice-client.md)，接口字段见 [接口协议](protocol.md)。
+本文对应 2026-10-25 的实现，说明从启动 Mac 客户端到听见灵矽回复、启动 AgentAPI 任务并投屏的实际过程。安装和操作步骤见 [语音客户端说明](voice-client.md)，接口字段见 [接口协议](protocol.md)。
 
 Mac 上的浏览器页面和 `cmd/voice` Go 进程共同组成一台软件设备：页面提供麦克风、扬声器和按钮；Go 进程提供设备身份、连接协议和音频编解码；灵矽云端运行绑定的智能体，完成语音识别、理解和语音合成。
 
@@ -155,22 +155,22 @@ Go 每 25 秒发送一次云端 WebSocket Ping；传输心跳不会阻止云端�
 
 **7. 这条语音连接与编程、投屏如何衔接**
 
-目前已验证真实语音以及灵矽到控制服务的 MCP 调用。独立的 `cmd/control` 默认监听 8080，联调时可通过 `LISTEN_ADDR` 改为 8081；当前 8090 语音页面尚未连接它的设备状态 WebSocket 和编程事件 SSE。
+当前已验证从真实语音到 AgentAPI 和设备投屏的完整链路。独立的 `cmd/control` 默认监听 8080，联调时可通过 `LISTEN_ADDR` 覆盖；8090 语音页面仍只负责语音收发，编程事件通过设备浏览器打开控制服务提供的公开 Session 展示页。
 
-当前链路与待接入部分如下：
+当前链路如下：
 
 ```mermaid
 flowchart LR
   Mac[Mac 语音客户端] <-->|已验证：语音 WSS| Linx[灵矽智能体]
   Linx -->|已验证：云端 MCP| Control[Go 编程控制服务 / cmd/control]
-  Control -.->|待真实联调| Agent[七牛 AgentAPI / claudecode]
-  Control -.->|待接入页面：状态 WS 与事件 SSE| Display[Mac 开发展示页面]
-  Display -.->|待实现：AirPlay| Screen[目标屏幕]
+  Control -->|真实 Session、事件 SSE、静态产物| Agent[七牛 AgentAPI / claudecode]
+  Control -->|公开 Session 展示页| Display[设备 Chromium kiosk]
+  Display -->|浏览器画面镜像| Screen[AirPlay 目标屏幕]
 ```
 
 设备身份是语音链路和编程控制链路的关联点：把控制服务 `DEVICE_ID` 配为软件设备的 Device-Id，并与灵矽云端 MCP 带入的 `X-Linx-Device-Id` 匹配。网页体验端的虚拟设备 ID 与它不同，可以列出工具，但默认不能调用工具。不要用灵矽语音 session_id 代替 AgentAPI 的编程 session_id。
 
-客户端当前不会启动本地 Claude Code，也没有实现端侧 MCP 的投屏工具。默认 Mock 下的开发进度和番茄钟产物是模拟内容；真实编程需配置 AgentAPI。角色提示词不能替代工具配置和实际实现。
+客户端不会启动本地 Claude Code，也不持有 AgentAPI 凭据。默认 Mock 下的开发进度和番茄钟产物是模拟内容；配置 HTTP Provider 后由控制服务真实创建 AgentAPI Session。角色提示词只负责规定灵汐云如何在控制 MCP 与设备 MCP 之间编排，设备 MCP 自己只打开网页和管理 AirPlay。
 
 **8. 阅读代码的顺序**
 

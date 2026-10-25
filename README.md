@@ -4,7 +4,7 @@
 
 基于 [issue #6 的整体设计](https://github.com/wwcchh0123/hackathonGO-2026/issues/6)：灵矽云理解语音，Go 控制服务编排七牛 AgentAPI，设备拉流渲染并投屏，大屏仅负责显示。
 
-当前提供 **Go 控制服务、完整模拟链路、Mac 软件语音终端**，以及通过 Anthropic Go SDK 接入真实 AgentAPI 会话、事件流和 Files API 的 HTTP 适配器。语音终端可真实接入灵矽的 ASR / 智能体 / TTS；设备 MCP 和 AirPlay 发送端后续接入。两个程序的原生 HTML/JS 页面分别嵌入 Go 二进制，无需前端构建。
+当前提供 **Go 控制服务、完整模拟链路、Mac 软件语音终端**，以及通过 Anthropic Go SDK 接入真实 AgentAPI 会话、事件流和 Files API 的 HTTP 适配器。语音终端可真实接入灵矽的 ASR / 智能体 / TTS；独立设备 MCP 会让模拟树莓派浏览器打开任务展示页，再把浏览器画面通过 AirPlay 镜像到目标屏幕。两个程序的原生 HTML/JS 页面分别嵌入 Go 二进制，无需前端构建。
 
 ## Mac 语音客户端
 
@@ -69,7 +69,7 @@ internal/
 docs/                      接口协议与外部接入约定
 ```
 
-设备不持有 AgentAPI 凭据，也不包含编程执行逻辑。`DEV_TOOLS=false` 同时关闭模拟页面、静态联调资源和 `/api/commands`；硬件通过独立的设备协议接入。
+设备不持有 AgentAPI 凭据，也不包含编程执行逻辑。`DEV_TOOLS=false` 同时关闭模拟页面、静态联调资源和 `/api/commands`；硬件通过独立的设备 MCP 接入。控制 MCP 的任务工具返回 `display_url`，灵矽 Agent 应把它原样传给设备 MCP 的 `cast_screen`；展示 URL 只包含 `task_ref`，网页通过 SSE 读取该任务的原始 AgentAPI 事件。
 
 中心管理页使用与控制台相同的 `CONTROL_TOKEN`，默认打开“待处理”视图，也可切换到设备列表和跨设备任务列表。全局搜索支持设备 ID、task_ref、AgentAPI session_id 和任务标题；任务详情始终带所属设备。页面只读展示进程内设备注册表和按 `metadata.device_id` 归属的 AgentAPI 任务。设备通过受鉴权的 MCP 请求被发现并刷新 `last_seen`；“在线”只表示最近触达 control，不是硬件心跳。注册表和 `task_ref` 仍是内存状态，重启后由设备重新触达并重新列出历史任务。该阶段 proposal 和实现记录在 [Issue #23](https://github.com/wwcchh0123/hackathonGO-2026/issues/23)。
 
@@ -91,9 +91,13 @@ make build run
 
 云端 MCP 按 [issue #18](https://github.com/wwcchh0123/hackathonGO-2026/issues/18) 提供 `list_tasks`、`get_task`、`send_message`、`new_task` 四个工具，替换旧 `get_status/start_new_project`。成功结果为 JSON text content；异步回执返回 `task_ref/command_id`，用详情查询确认提交结果。列表按当前授权身份查询单页，历史任务不依赖本地缓存；实时 SSE 和预览下载均由设备按需触发。`AGENTAPI_VAULT_IDS` 可配置 GitHub credential 的 Vault 引用，由 Agent 在授权范围自行定位仓库。
 
+`new_task`、`send_message` 和 `get_task` 的 JSON 结果会在配置 `PUBLIC_URL` 后附带 `display_url`，例如 `https://example.test/display/?task_ref=task_...`。当地址是 ngrok 域名时会自动带 `ngrok-skip-browser-warning=true`；设备 Chromium 同时使用默认的非标准 User-Agent `LinxiDevice/0.1`，避免后续资源请求再次进入 ngrok 提示页；可用 `BROWSER_USER_AGENT` 覆盖。展示页打开后每 3 秒轮询公开的 `/display/sessions`，左侧显示多个任务并可切换，选中任务后通过 EventSource 实时接收该任务事件。创建任务是异步的，设备可以先打开该 URL；展示页会在云端 Session 建立后自动重连，不依赖“当前 session”猜测。
+
+模拟树莓派设备的启动、nginx 路径分流、ngrok 单端点和 AirPlay 默认值见 [`deploy/local/README.md`](deploy/local/README.md)。设备 MCP 使用 `/device/mcp`，控制 MCP 使用 `/mcp`；设备 MCP 只提供 `scan_screens`、`cast_screen`、`stop_cast`，投屏停止不会停止 AgentAPI 任务。
+
 在灵矽后台配置 MCP URL `https://你的服务域名/mcp`。同一地址支持当前灵矽使用的 Streamable HTTP（`POST /mcp`）和旧版 SSE（`GET /mcp` → `POST /mcp/message`）；后台即使将字段标为 SSE URL，也使用此地址。管理端初始化和列举工具无需设备 ID；真正调用工具时，每次请求的 `X-Linx-Device-Id` 决定设备路由，control 会在内存中登记该设备并隔离其任务引用。`DEVICE_ID` 仍是启动时的默认设备，适合单设备部署。网页体验的虚拟设备可发现工具，但不能替代已绑定的 Mac 设备调用工具。`X-Linx-Session-Id` 用于对话内默认发送目标、日志和五秒去重；所有 MCP HTTP 请求均使用独立的 CONTROL_TOKEN Bearer 鉴权。反向代理允许 WebSocket、关闭 SSE 缓冲，读超时至少十分钟；不启用要求客户端回复 ping 的 MCP KeepAlive。配置和智能体提示词见 [协议文档](docs/protocol.md#灵矽配置与部署)。
 
-让 agent 把最终静态网站（`index.html` 和相对路径资源）导出到 `/mnt/session/outputs/`，设备明确请求预览时，服务端经 Files API 有界下载并托管。不启动任意沙箱端口，不执行构建，也不解压归档文件。需要 Node/Vite 的项目应由 agent 在沙箱构建后导出静态文件。
+让 agent 把最终静态网站（优先是 `index.html` 和相对路径资源）导出到 `/mnt/session/outputs/`。每一轮任务进入 idle 后，展示页会自动经 Files API 有界下载 HTML 并托管，在 CodeAgent 风格的右侧预览面板打开；下一轮开始时清空旧预览。没有 HTML 产物时继续显示事件，不影响任务状态。不启动任意沙箱端口，不执行构建，也不解压归档文件。需要 Node/Vite 的项目应由 agent 在沙箱构建后导出静态文件。
 
 手机访问结果需要将 `PUBLIC_URL` 改为手机可访问的服务地址；若从局域网访问，也要相应设置 `LISTEN_ADDR`。二维码等硬件展示细节后续由设备端实现。
 

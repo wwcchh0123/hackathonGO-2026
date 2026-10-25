@@ -189,7 +189,7 @@ func TestSessionCatalogSDKContractProjectionAndVaults(t *testing.T) {
 	}))
 	defer upstream.Close()
 	p := NewHTTP(upstream.URL, "test-key", "agent", "env").WithVaults([]string{"v1", "v2"})
-	page, err := p.ListSessions(ctx, SessionQuery{Limit: 2, Page: "cursor", AgentID: "agent", Status: "idle", CreatedAfter: "2026-10-01T00:00:00Z", CreatedBefore: "2026-10-25T00:00:00Z", IncludeArchived: true})
+	page, err := p.ListSessions(ctx, SessionQuery{Limit: 2, Page: "cursor", AgentID: "unrelated-agent", Status: "idle", CreatedAfter: "2026-10-01T00:00:00Z", CreatedBefore: "2026-10-25T00:00:00Z", IncludeArchived: true})
 	if err != nil || len(page.Data) != 1 || page.NextPage != "next" {
 		t.Fatal(page, err)
 	}
@@ -238,10 +238,10 @@ func TestWriteErrorUncertaintyAndValidation(t *testing.T) {
 		t.Run(runtime, func(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				if strings.Contains(r.URL.Path, "agents") {
+				if r.URL.Path == "/v1/agents/a" {
 					fmt.Fprintf(w, `{"id":"a","type":"agent","runtime":%q}`, runtime)
 				} else {
-					fmt.Fprint(w, `{"id":"e","config":{"type":"cloud"}}`)
+					fmt.Fprint(w, `{"data":[{"id":"e","config":{"type":"cloud"}}],"next_page":null}`)
 				}
 			}))
 			defer upstream.Close()

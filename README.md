@@ -1,4 +1,8 @@
-[![CI](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Build](https://img.shields.io/badge/build-passing-success.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.26.0-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![codecov](https://codecov.io/gh/wwcchh0123/hackathonGO-2026/branch/main/graph/badge.svg)](https://codecov.io/gh/wwcchh0123/hackathonGO-2026)
+<!-- Codecov 数据待仓库公开并接入覆盖率上传后展示。 -->
 
 <p align="center">
   <img src="docs/assets/fenno.svg" width="120" height="120" alt="Fenno 蓝色狐狸标志" /><br />
@@ -19,6 +23,7 @@
 <p align="center">
   <a href="#你的-agent跟着你的想法走">认识 Fenno Air</a> ·
   <a href="#先体验本地模拟">快速体验</a> ·
+  <a href="#核心技术">核心技术</a> ·
   <a href="docs/deploy.md">部署指南</a> ·
   <a href="docs/architecture.md">架构与模块</a>
 </p>
@@ -64,6 +69,17 @@
 
 GitHub 场景需要预先配置目标仓库的访问与写入授权，见 [部署指南](docs/deploy.md#真实-agentapi)。
 
+## 核心技术
+
+| 能力 | 实现 |
+| --- | --- |
+| 语音交互 | 灵矽设备协议、WebSocket、ASR/TTS、Opus |
+| AI 编程 | 七牛 AgentAPI、Claude Code、云端沙箱 |
+| 工具协作 | 控制 MCP、设备 MCP、SSE、Streamable HTTP |
+| 实时展示 | Go 控制服务、SSE 事件流、静态产物预览 |
+| 大屏投放 | Chromium、Doubletake、AirPlay |
+| 人物界面 | 小狐狸人物页、语音状态、回复气泡 |
+
 ## 先体验本地模拟
 
 需要 Go 1.26+。克隆仓库后，在项目目录运行：
@@ -104,3 +120,9 @@ make dev
 | Mac 激活、录音、重连与排错 | [语音指南](docs/voice.md) |
 | 系统组成、模块规格与分工 | [当前实现架构](docs/architecture.md) |
 | MCP、HTTP、SSE、语音接口 | [接口协议](docs/protocol.md) |
+
+## 演示视频
+
+[观看 Fenno Air 演示视频](https://www.bilibili.com/video/BV1FQnD6AEpY/)
+
+> 拍摄环境受限，视频的画面与收音效果可能影响观看体验，敬请谅解。

@@ -69,9 +69,9 @@ func (d Dialer) Connect(ctx context.Context, creds Credentials, id Identity) (*C
 	ws, resp, err := websocket.Dial(handshake, u.String(), &websocket.DialOptions{HTTPHeader: h, HTTPClient: client})
 	if err != nil {
 		if resp != nil {
-			return nil, fmt.Errorf("Lingxi WebSocket rejected connection (HTTP %d); reconnect to refresh the device token", resp.StatusCode)
+			return nil, fmt.Errorf("lingxi WebSocket rejected connection (HTTP %d); reconnect to refresh the device token", resp.StatusCode)
 		}
-		return nil, errors.New("Lingxi WebSocket connection failed; check network and OTA configuration")
+		return nil, errors.New("lingxi WebSocket connection failed; check network and OTA configuration")
 	}
 	ws.SetReadLimit(1 << 20)
 	ok := false
@@ -90,7 +90,7 @@ func (d Dialer) Connect(ctx context.Context, creds Credentials, id Identity) (*C
 	}
 	typ, data, err := ws.Read(handshake)
 	if err != nil {
-		return nil, errors.New("Lingxi hello timed out or connection closed")
+		return nil, errors.New("lingxi hello timed out or connection closed")
 	}
 	response := struct {
 		Type      string      `json:"type"`

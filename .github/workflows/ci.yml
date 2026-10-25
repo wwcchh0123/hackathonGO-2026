@@ -22,3 +22,12 @@ jobs:
           node --test internal/voice/test/pcm.test.mjs
       - name: Generate coverage report
         run: make coverage
+      - name: Retain coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profiles
+          path: |
+            coverage.out
+            coverage-production.out
+          if-no-files-found: error

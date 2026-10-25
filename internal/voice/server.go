@@ -23,7 +23,7 @@ import (
 //go:embed ui/*
 var assets embed.FS
 
-var errSessionEnded = errors.New("Lingxi session ended")
+var errSessionEnded = errors.New("lingxi session ended")
 
 type Status struct {
 	DeviceID       string `json:"device_id"`
@@ -251,7 +251,7 @@ func upload(ctx context.Context, p *peer, cloud *linx.Connection, codec voicecod
 			err := cloud.Socket.Ping(pctx)
 			cancel()
 			if err != nil {
-				return errors.New("Lingxi connection heartbeat failed; reconnect")
+				return errors.New("lingxi connection heartbeat failed; reconnect")
 			}
 		case frame := <-in:
 			if frame.typ == websocket.MessageBinary {

@@ -54,3 +54,27 @@ func TestOpusSpeechFrameRoundTrip(t *testing.T) {
 		t.Fatal("partial frame must be padded by caller")
 	}
 }
+
+func TestOpusRejectsInvalidRateAndEmptyPacket(t *testing.T) {
+	if !Available() {
+		t.Fatal("native build must report available")
+	}
+	if _, err := (Opus{}).Decoder(12345); err == nil {
+		t.Fatal("invalid sample rate accepted")
+	}
+	d, err := (Opus{}).Decoder(16000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.Decode(nil); err == nil {
+		t.Fatal("empty packet accepted")
+	}
+	d.Close() // Releasing a codec is safe more than once.
+	e, err := (Opus{}).Encoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Close()
+	e.Close()
+}

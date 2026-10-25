@@ -14,12 +14,12 @@ test:
 	go test -race ./...
 
 coverage:
-	go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out
+	sh scripts/coverage.sh
 
 check:
 	test -z "$$(gofmt -l cmd internal)"
 	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
 run:
 	./bin/control

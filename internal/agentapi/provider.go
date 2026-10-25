@@ -66,7 +66,6 @@ type AcceptedInput struct{ EventID string }
 
 type Provider interface {
 	Create(context.Context, ...NewSession) (Session, error)
-	Send(context.Context, string, string) error
 	Interrupt(context.Context, string) error
 	Status(context.Context, string) (Session, error)
 	Stream(context.Context, string, func(events.Frame) error) error

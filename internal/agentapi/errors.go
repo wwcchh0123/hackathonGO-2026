@@ -3,15 +3,12 @@ package agentapi
 import (
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
 )
 
 // Error reports safe metadata, never provider response bodies or credentials.
 type Error struct {
 	Operation  string
 	StatusCode int
-	RequestID  string
 	Ambiguous  bool // A write may have reached the server. Never blindly repeat it.
 	Cause      error
 }
@@ -34,13 +31,4 @@ func Retryable(err error) bool {
 }
 func KnownStatus(s string) bool {
 	return s == "idle" || s == "running" || s == "rescheduling" || s == "terminated"
-}
-func safeRequestID(header http.Header) string {
-	for _, key := range []string{"X-Request-Id", "Request-Id", "X-Reqid"} {
-		v := strings.TrimSpace(header.Get(key))
-		if len(v) <= 128 && !strings.ContainsAny(v, "\r\n") && v != "" {
-			return v
-		}
-	}
-	return ""
 }

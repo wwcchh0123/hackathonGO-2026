@@ -161,28 +161,18 @@ make voice
 lsof -nP -iTCP:8090 -sTCP:LISTEN
 ```
 
-## 开发验证及其他入口
+## 连接编程与投屏
 
-需要验证代码时，在仓库根目录运行：
+语音客户端只处理身份、音频和语音事件。它不会在本机启动 Claude Code，也不持有 AgentAPI Key；编程由独立控制服务连接 AgentAPI。按 [部署指南](deploy.md) 将控制 MCP 和设备 MCP 关联到灵矽智能体，工具角色配置以 [协议文档](protocol.md#灵矽配置与部署) 为准。
 
-```sh
-make check test build
-make voice-test
-```
+控制服务的 `DEVICE_ID` 可使用页面上的设备 ID。每次工具调用中的 `X-Linx-Device-Id` 用于设备路由；灵矽语音会话 ID、编程任务引用和 AgentAPI Session ID 含义不同。编程工具返回 `display_url` 后，智能体将完整地址交给设备 MCP 的 `cast_screen`。
 
-修改浏览器重采样代码时，额外运行下面的开发测试，此项需要 Node.js：
+点击“停止播报”只停止 TTS。编程暂停/继续通过 `send_message` 传给云端任务；停止投屏只改变画面输出。当前没有持续免按键自由对话；重连不保证恢复之前的灵矽对话上下文，也不会补发上次录音。
 
-```sh
-node --test internal/voice/test/pcm.test.mjs
-```
+## 音频与身份边界
 
-命令用途如下：
+浏览器将麦克风音频连续重采样为 16 kHz 单声道 PCM，每帧 60 ms，经本地 WebSocket 交给 Go 编码为 Opus，再通过 WSS 发送到灵矽。回传音频按云端 hello 的采样率解码播放，不假定输入输出采样率相同。
 
-| 命令 | 用途 |
-| --- | --- |
-| `make voice` | 编译并启动真实语音客户端，默认 8090 |
-| `make voice-build` | 仅生成 `bin/voice` |
-| `make dev` | 启动编程控制服务及模拟页面，默认 8080 |
-| `make build` / `make run` | 构建 / 运行 `bin/control` |
+设备 token 每次连接通过 OTA 获取，仅保留在 Go 内存中，不交给浏览器，不写入 URL 或日志。OTA 固件信息不会用于安装硬件固件。本地连接校验 Host/Origin，只允许本机回环地址和一个语音窗口。
 
-当前语音客户端已完成真实语音接入；编程 MCP 联调、编程展示页面整合和 AirPlay 是后续工作。连接原理见 [语音连接整体逻辑](voice-connection-flow.md)，实现范围与音频细节见 [语音客户端说明](voice-client.md)。
+开发测试和真实声画验收范围见 [评估与验证说明](evaluation.md)。

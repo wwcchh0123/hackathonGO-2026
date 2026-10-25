@@ -177,7 +177,6 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 		c.mu.Unlock()
 		return Detail{}, err
 	}
-	id := t.id
 	key := o.CommandID
 	if key == "" && len(t.order) > 0 {
 		key = t.order[len(t.order)-1]
@@ -191,7 +190,7 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 	ctx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
 	defer cancel()
 	c.mu.Lock()
-	id = t.id
+	id := t.id
 	d := Detail{Task: Task{Ref: ref, SessionID: id, Title: truncate(t.prompt, 100), Status: "creating", CreatedAt: t.created}, QueriedAt: time.Now().UTC(), StopReason: "unknown", Messages: []Message{}, Events: []json.RawMessage{}, Files: agentapi.FilePage{Data: []agentapi.FileInfo{}}, ResultURL: t.resultURL}
 	if key != "" {
 		if s := t.commands[key]; s != nil {

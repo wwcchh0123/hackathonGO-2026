@@ -119,6 +119,14 @@ func New(ctx context.Context, p agentapi.Provider, state *device.State, store *a
 		bindings[legacy.Key] = ProfileBinding{Profile: legacy, Provider: p}
 	}
 	defaultProfile := o.DefaultProfile
+	if _, ok := bindings[defaultProfile]; !ok && defaultProfile != "" {
+		for key, binding := range bindings {
+			if binding.Profile.Runtime == defaultProfile && binding.Profile.CreateEnabled {
+				defaultProfile = key
+				break
+			}
+		}
+	}
 	if defaultProfile == "" {
 		for key, binding := range bindings {
 			if binding.Profile.CreateEnabled {

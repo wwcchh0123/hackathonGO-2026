@@ -79,6 +79,9 @@ func Parse(raw string) (Registry, error) {
 	if raw == "" {
 		return Registry{}, errors.New("AGENTAPI_RUNTIME_PROFILES_JSON is empty")
 	}
+	if err := requireProfileFields(raw); err != nil {
+		return Registry{}, err
+	}
 	var registry Registry
 	if strings.HasPrefix(raw, "[") {
 		if err := strictJSON(raw, &registry.Profiles); err != nil {
@@ -104,6 +107,31 @@ func Parse(raw string) (Registry, error) {
 		}
 	}
 	return registry, nil
+}
+
+func requireProfileFields(raw string) error {
+	var entries []map[string]json.RawMessage
+	if strings.HasPrefix(raw, "[") {
+		if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+			return fmt.Errorf("invalid AGENTAPI_RUNTIME_PROFILES_JSON: %w", err)
+		}
+	} else {
+		var envelope struct {
+			Profiles []map[string]json.RawMessage `json:"profiles"`
+		}
+		if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+			return fmt.Errorf("invalid AGENTAPI_RUNTIME_PROFILES_JSON: %w", err)
+		}
+		entries = envelope.Profiles
+	}
+	for i, entry := range entries {
+		for _, field := range []string{"capabilities", "create_enabled", "read_enabled"} {
+			if _, ok := entry[field]; !ok {
+				return fmt.Errorf("profile %d requires %s", i, field)
+			}
+		}
+	}
+	return nil
 }
 
 func (r Registry) Validate() error {

@@ -45,6 +45,14 @@ func TestRegistryConfigurationAndRotation(t *testing.T) {
 	}
 }
 func TestRegistryRejectsInvalidConfiguration(t *testing.T) {
+	for _, raw := range []string{
+		`{"profiles":[{"key":"codex","runtime":"codex","agent_id":"a","agent_version":1,"environment_id":"e","default_model":{"id":"m"},"allowed_models":[{"id":"m"}],"create_enabled":true,"read_enabled":true}]}`,
+		`{"profiles":[{"key":"codex","runtime":"codex","agent_id":"a","agent_version":1,"environment_id":"e","default_model":{"id":"m"},"allowed_models":[{"id":"m"}],"capabilities":{"continue":true},"read_enabled":true}]}`,
+	} {
+		if _, err := Parse(raw); err == nil {
+			t.Fatalf("accepted profile with missing required fields: %s", raw)
+		}
+	}
 	for _, raw := range []string{"", "{", "[]", "null", `{"profiles":[],"typo":1}`, "[] {}", "[{}]"} {
 		if _, err := Parse(raw); err == nil {
 			t.Fatalf("accepted %q", raw)

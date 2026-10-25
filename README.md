@@ -85,6 +85,8 @@ make build run
 
 `AGENTAPI_AGENT_ID` 必须指向预先配置好的 **claudecode** 智能体；当前 AgentAPI 文档推荐的 Go SDK 版本为 `github.com/anthropics/anthropic-sdk-go v1.72.0`，`AGENTAPI_ENVIRONMENT_ID` 为云端环境。控制服务不会替你创建 agent/environment 或覆盖其模型。API Key 只由服务端读取，浏览器使用另一个 `CONTROL_TOKEN` 建立 HttpOnly 会话 Cookie；云 MCP 调用使用 `Authorization: Bearer <CONTROL_TOKEN>`。
 
+真实 `AGENTAPI_MODE=http` 时，`PUBLIC_URL` 必须是灵矽云和模拟设备都能访问的公网地址，例如 ngrok HTTPS 地址；服务会拒绝 `127.0.0.1`、`::1` 和 `localhost`，避免生成设备无法打开的展示链接。
+
 云端 MCP 按 [issue #18](https://github.com/wwcchh0123/hackathonGO-2026/issues/18) 提供 `list_tasks`、`get_task`、`send_message`、`new_task` 四个工具，替换旧 `get_status/start_new_project`。成功结果为 JSON text content；异步回执返回 `task_ref/command_id`，用详情查询确认提交结果。列表按当前授权身份查询单页，历史任务不依赖本地缓存；实时 SSE 和预览下载均由设备按需触发。`AGENTAPI_VAULT_IDS` 可配置 GitHub credential 的 Vault 引用，由 Agent 在授权范围自行定位仓库。
 
 `new_task`、`send_message` 和 `get_task` 的 JSON 结果会在配置 `PUBLIC_URL` 后附带 `display_url`，例如 `https://example.test/display/?task_ref=task_...`。当地址是 ngrok 域名时会自动带 `ngrok-skip-browser-warning=true`；设备 Chromium 同时使用默认的非标准 User-Agent `LinxiDevice/0.1`，避免后续资源请求再次进入 ngrok 提示页；可用 `BROWSER_USER_AGENT` 覆盖。展示页打开后每 3 秒轮询公开的 `/display/sessions`，左侧显示多个任务并可切换，选中任务后通过 EventSource 实时接收该任务事件。创建任务是异步的，设备可以先打开该 URL；展示页会在云端 Session 建立后自动重连，不依赖“当前 session”猜测。

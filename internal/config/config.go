@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -57,7 +58,23 @@ func Load() (Config, error) {
 			return c, fmt.Errorf("invalid %s", name)
 		}
 	}
+	if c.Mode == "http" && loopbackURL(c.PublicURL) {
+		return c, fmt.Errorf("http mode requires PUBLIC_URL reachable by Linxi; loopback address is invalid")
+	}
 	return c, nil
+}
+
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func intEnv(k string, d int) int {

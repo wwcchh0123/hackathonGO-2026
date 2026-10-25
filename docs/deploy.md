@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 本地 Mock | Go 1.26+ | 控制、任务切换、事件和固定示例产物；无需云端密钥 |
 | 真实 AI + 浏览器 | Go、AgentAPI agent/environment、CONTROL_TOKEN | 真实 Session 编程、同任务修改、事件和静态产物 |
-| 真实语音 + 投屏 | 上述配置、Mac/Opus、灵矽绑定、Chromium、doubletake、AirPlay 接收端 | 语音发起并在目标屏幕查看；需分别验收语音与物理接收画面 |
+| 真实语音 + 投屏 | 上述配置、目标树莓派（当前用 Mac/Opus 验证）、灵矽绑定、Chromium、doubletake、AirPlay 接收端 | 树莓派承担语音对话和 AirPlay 发送；需分别验收语音、sender 与物理接收画面 |
 
 项目无需 Node.js 或前端构建。Node.js 仅用于浏览器音频开发测试。
 
@@ -61,9 +61,9 @@ make build run
 
 ## 本地语音与两个 MCP
 
-控制服务和设备展示程序运行在本机，nginx 合并路径后通过 ngrok 提供灵矽可访问的 HTTPS 入口。也可将控制服务部署到云主机；设备 MCP 仍需在能启动现场浏览器和投屏进程的设备上运行。
+控制服务和设备展示程序运行在本机，nginx 合并路径后通过 ngrok 提供灵矽可访问的 HTTPS 入口。也可将控制服务部署到云主机；目标部署中设备 MCP、Chromium 和 AirPlay sender 运行在树莓派上，当前可先用本机模拟程序验证。
 
-准备 nginx、ngrok、Chromium 和设备上可用的 doubletake。仓库不提供 Raspberry Pi 固件，也不内置 doubletake。安装来源和目标平台兼容性需由演示环境确认；仅启动 sender 不能证明接收屏已显示。
+准备 nginx、ngrok、Chromium 和树莓派上可用的 doubletake。仓库不提供 Raspberry Pi 固件，也不内置 doubletake；当前 Mac/模拟设备只用于验证协议和流程。安装来源、ARM64/音频兼容性和目标平台适配需由演示环境确认；仅启动 sender 不能证明接收屏已显示。
 
 按以下顺序在独立终端启动（先取得 ngrok 域名，并同步到 `.env` 的 `PUBLIC_URL`）：
 
@@ -71,7 +71,7 @@ make build run
 # 终端一：已载入真实 AgentAPI 环境变量；或使用 AGENTAPI_MODE=mock
 make run
 
-# 终端二：设备模拟程序；替换为当前屏幕的配置
+# 终端二：树莓派设备进程（本机演示可用 device-display 模拟）
 AIRPLAY_TARGET=<receiver-ip> AIRPLAY_PASSWORD=<pairing-password> \
 BROWSER_BIN=<chromium-path> DISPLAY_ALLOWED_HOSTS=<ngrok-domain> \
 ./bin/device-display
@@ -115,7 +115,7 @@ ngrok 域名会自动附加跳过提示参数，设备 Chromium 默认使用 `Li
 
 ## 检查、停止与排错
 
-健康检查 `GET /healthz` 只检查本机 HTTP，不证明云端可用。先确认健康，再确认 MCP 工具、真实 Session、浏览器画面，最后在接收屏核对像素和交互。逐层验证清单见 [评估说明](evaluation.md)。
+健康检查 `GET /healthz` 只检查本机 HTTP，不证明云端可用。先确认健康，再确认 MCP 工具、真实 Session、浏览器画面，最后在接收屏核对像素和交互。完整验收记录见 [Issue #25](https://github.com/wwcchh0123/hackathonGO-2026/issues/25)。
 
 反代需关闭 SSE 缓冲/缓存，支持 WebSocket，并保持至少 600 秒读超时。转到 loopback 上游时使用 `$proxy_host`，否则 MCP SDK 的 Host 校验可能返回 403。`nginx.conf` 已提供这些配置。
 

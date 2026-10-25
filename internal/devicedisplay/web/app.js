@@ -236,7 +236,7 @@ function clearPreview() {
 }
 
 async function requestPreview() {
-  if (!state.taskRef || state.previewBusy || state.previewURL || state.status !== 'idle') return;
+  if (!state.taskRef || state.previewBusy || state.previewTimer || state.previewURL || state.status !== 'idle') return;
   if (state.previewAttempts >= 4) return;
   const taskRef = state.taskRef;
   state.previewBusy = true;
@@ -283,6 +283,10 @@ function applySelectedTask() {
   $('runtime').textContent = task?.runtime === 'claudecode' ? 'Claude Code' : (task?.runtime || 'Agent runtime');
   if (task) setStatus(task.status);
   renderSessionList();
+  // The session list is polled independently from the event stream. If the
+  // SSE connection misses the running -> idle boundary, this still starts the
+  // same idle-round artifact lookup without requiring the page to be reopened.
+  if (task?.status === 'idle') requestPreview();
 }
 
 function resetView() {

@@ -35,8 +35,12 @@ jobs:
             coverage.out
             coverage-production.out
           if-no-files-found: error
-      - name: Upload coverage reports to Codecov
-          uses: codecov/codecov-action@v5
-          with:
-            token: ${{ secrets.CODECOV_TOKEN }}
-            slug: wwcchh0123/hackathonGO-2026
+      - name: Upload Go coverage to Codecov
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage-production.out
+          flags: go-production
+          name: go-coverage
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true

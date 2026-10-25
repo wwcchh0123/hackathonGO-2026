@@ -1,15 +1,20 @@
 [![CI](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="docs/assets/fenno.svg" width="120" height="120" alt="Fenno 蓝色狐狸标志" />
+  <img src="docs/assets/fenno.svg" width="120" height="120" alt="Fenno 蓝色狐狸标志" /><br />
+  <a href="docs/assets/fenno-air-wordmark.svg#gh-light-mode-only"><img src="docs/assets/fenno-air-wordmark.svg" width="224" height="40" alt="Fenno Air" /></a>
+  <a href="docs/assets/fenno-air-wordmark-dark.svg#gh-dark-mode-only"><img src="docs/assets/fenno-air-wordmark-dark.svg" width="224" height="40" alt="Fenno Air" /></a>
 </p>
-
-<h1 align="center">Fenno Air</h1>
 
 <p align="center">
-  <strong>开口即开工，有屏即主场。</strong><br />
+  <strong>开口即开工，有屏即主场。</strong>
+</p>
+
+<p align="center">
   随你而行，听你指挥的个人 Agent。
 </p>
+
+<br />
 
 <p align="center">
   <a href="#你的-agent跟着你的想法走">认识 Fenno Air</a> ·
@@ -22,7 +27,7 @@
 
 灵感未必出现在电脑前。它可能来自沙发上的一次闲聊、会议里的一段讨论，或准备出门时突然冒出的念头。
 
-**Fenno Air 是随你而行的个人 Agent。想到什么，开口交代；做到哪了，随时问一句；方向变了，再补充一句。** 从书桌到客厅，从一个人的灵感到一群人的讨论，让 Agent 跟上你的节奏。
+**Fenno Air 是一款搭载灵矽的智能硬件，让你的个人 Agent 随你而行。** 想到什么，开口交代；做到哪了，随时问一句；方向变了，再补充一句。借身边的大屏，看它把你的想法一步步变成现实。
 
 ## 聊懂了，就一起动手
 

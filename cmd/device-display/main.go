@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/devicecast"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/devicecontrol"
 )
@@ -45,6 +47,7 @@ type config struct {
 	AirPlayHWAccel    string
 	AirPlayVideoCode  string
 	Doubletake        string
+	BrowserDebugPort  int
 }
 
 type runtime struct {
@@ -76,7 +79,7 @@ func run() error {
 	rt := &runtime{
 		base:    ctx,
 		cfg:     cfg,
-		browser: &browser{binary: cfg.Browser, userAgent: cfg.BrowserUserAgent, width: cfg.Width, height: cfg.Height},
+		browser: &browser{binary: cfg.Browser, userAgent: cfg.BrowserUserAgent, width: cfg.Width, height: cfg.Height, debugPort: cfg.BrowserDebugPort},
 		cast: devicecast.New(devicecast.Config{
 			Binary: cfg.Doubletake, Target: cfg.AirPlayTarget, Port: cfg.AirPlayPort,
 			Password: cfg.AirPlayPassword, Credentials: cfg.AirPlayCredential,
@@ -143,6 +146,10 @@ func (r *runtime) CastScreen(ctx context.Context, rawURL string) error {
 	return nil
 }
 
+func (r *runtime) ScrollScreen(ctx context.Context, direction string, pages int) error {
+	return r.browser.Scroll(ctx, direction, pages)
+}
+
 func (r *runtime) StopCast(context.Context) error {
 	r.mu.Lock()
 	cancel := r.airplayCancel
@@ -160,6 +167,7 @@ type browser struct {
 	userAgent string
 	width     int
 	height    int
+	debugPort int
 	cancel    context.CancelFunc
 	done      <-chan error
 }
@@ -186,6 +194,7 @@ func (b *browser) Open(parent context.Context, rawURL string) error {
 		"--no-first-run", "--no-default-browser-check", "--disable-features=Translate,TranslateUI,MediaRouter",
 		"--disable-translate", "--lang=zh-CN", "--window-position=0,0",
 		"--user-agent=" + b.userAgent,
+		"--remote-debugging-address=127.0.0.1", fmt.Sprintf("--remote-debugging-port=%d", b.debugPort),
 		fmt.Sprintf("--window-size=%d,%d", b.width, b.height), "--kiosk", "--app=" + rawURL,
 	}
 	cmd := exec.CommandContext(ctx, binary, args...)
@@ -201,6 +210,120 @@ func (b *browser) Open(parent context.Context, rawURL string) error {
 	b.done = done
 	b.mu.Unlock()
 	return nil
+}
+
+// Scroll sends a mouse-wheel event through Chromium's local DevTools
+// endpoint. The device keeps the page in its own browser process, so the
+// control MCP can change the visible event range without knowing anything
+// about AgentAPI sessions or modifying their state.
+func (b *browser) Scroll(ctx context.Context, direction string, pages int) error {
+	if direction != "up" && direction != "down" {
+		return fmt.Errorf("滚动方向无效")
+	}
+	if pages < 1 || pages > 5 {
+		return fmt.Errorf("滚动页数无效，需要 1 到 5")
+	}
+	if b.debugPort <= 0 {
+		return fmt.Errorf("浏览器调试端口未配置")
+	}
+	var target devtoolsTarget
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		targets, err := b.targets(ctx)
+		if err == nil {
+			for _, candidate := range targets {
+				if candidate.Type == "page" && candidate.WebSocketDebuggerURL != "" {
+					target = candidate
+					break
+				}
+			}
+			if target.WebSocketDebuggerURL != "" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("连接浏览器调试接口: %w", err)
+			}
+			return fmt.Errorf("没有找到投屏页面")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	conn, _, err := websocket.Dial(ctx, target.WebSocketDebuggerURL, nil)
+	if err != nil {
+		return fmt.Errorf("连接浏览器页面: %w", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "scroll complete")
+	delta := float64(720 * pages)
+	if direction == "up" {
+		delta = -delta
+	}
+	message, err := json.Marshal(map[string]any{
+		"id":     1,
+		"method": "Input.dispatchMouseEvent",
+		"params": map[string]any{
+			"type":   "mouseWheel",
+			"x":      float64(b.width / 2),
+			"y":      float64(b.height / 2),
+			"deltaY": delta,
+			"deltaX": 0,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := conn.Write(ctx, websocket.MessageText, message); err != nil {
+		return fmt.Errorf("发送滚动指令: %w", err)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(readCtx)
+		if err != nil {
+			return fmt.Errorf("等待浏览器滚动结果: %w", err)
+		}
+		var response struct {
+			ID    int             `json:"id"`
+			Error json.RawMessage `json:"error"`
+		}
+		if json.Unmarshal(data, &response) != nil || response.ID != 1 {
+			continue
+		}
+		if len(response.Error) > 0 && string(response.Error) != "null" {
+			return fmt.Errorf("浏览器拒绝滚动: %s", response.Error)
+		}
+		return nil
+	}
+}
+
+type devtoolsTarget struct {
+	Type                 string `json:"type"`
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+}
+
+func (b *browser) targets(ctx context.Context) ([]devtoolsTarget, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/json/list", b.debugPort), nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("浏览器调试接口返回 HTTP %d", response.StatusCode)
+	}
+	var targets []devtoolsTarget
+	if err := json.NewDecoder(response.Body).Decode(&targets); err != nil {
+		return nil, err
+	}
+	return targets, nil
 }
 
 func (b *browser) Stop() error {
@@ -238,6 +361,7 @@ func loadConfig() (config, error) {
 		AirPlayHWAccel:    env("AIRPLAY_HWACCEL", "auto"),
 		AirPlayVideoCode:  env("AIRPLAY_VIDEO_CODEC", "h264"),
 		Doubletake:        env("DOUBLETAKE_BIN", "doubletake"),
+		BrowserDebugPort:  intEnv("BROWSER_DEBUG_PORT", 9222),
 	}
 	if c.Width < 320 || c.Height < 240 {
 		return c, fmt.Errorf("SCREEN_WIDTH and SCREEN_HEIGHT are too small")

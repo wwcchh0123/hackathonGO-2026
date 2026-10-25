@@ -14,9 +14,11 @@ import (
 )
 
 type fakeRuntime struct {
-	mu      sync.Mutex
-	castURL string
-	stopped int
+	mu              sync.Mutex
+	castURL         string
+	scrollDirection string
+	scrollPages     int
+	stopped         int
 }
 
 func (f *fakeRuntime) ScanScreens(context.Context) ([]Screen, error) {
@@ -27,6 +29,14 @@ func (f *fakeRuntime) CastScreen(_ context.Context, rawURL string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.castURL = rawURL
+	return nil
+}
+
+func (f *fakeRuntime) ScrollScreen(_ context.Context, direction string, pages int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scrollDirection = direction
+	f.scrollPages = pages
 	return nil
 }
 
@@ -68,7 +78,7 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	defer peer.Close()
 
 	tools, err := peer.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 3 {
+	if err != nil || len(tools.Tools) != 4 {
 		t.Fatalf("device tools: %v %v", tools, err)
 	}
 	if _, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "scan_screens"}); err != nil {
@@ -86,6 +96,19 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	runtime.mu.Unlock()
 	if gotURL != "https://public.example/display/?task_ref=task_1" {
 		t.Fatalf("cast URL: %q", gotURL)
+	}
+	scroll, err := peer.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "scroll_screen",
+		Arguments: map[string]any{"direction": "down", "pages": 2},
+	})
+	if err != nil || scroll.IsError {
+		t.Fatalf("scroll_screen: %v %v", scroll, err)
+	}
+	runtime.mu.Lock()
+	direction, pages := runtime.scrollDirection, runtime.scrollPages
+	runtime.mu.Unlock()
+	if direction != "down" || pages != 2 {
+		t.Fatalf("scroll request: %q %d", direction, pages)
 	}
 	bad, err := peer.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "cast_screen",

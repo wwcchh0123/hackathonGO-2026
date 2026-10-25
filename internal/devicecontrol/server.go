@@ -23,6 +23,7 @@ type Screen struct {
 type Runtime interface {
 	ScanScreens(context.Context) ([]Screen, error)
 	CastScreen(context.Context, string) error
+	ScrollScreen(context.Context, string, int) error
 	StopCast(context.Context) error
 }
 
@@ -65,6 +66,37 @@ func Handler(runtime Runtime) http.Handler {
 			return textResult(err.Error(), true), nil
 		}
 		return textResult("已打开网页并开始投屏", false), nil
+	})
+	server.AddTool(&mcp.Tool{
+		Name:        "scroll_screen",
+		Description: "滚动当前投屏网页。direction 使用 up 或 down；pages 表示滚动页数，默认 1。只改变展示位置，不修改 AgentAPI 任务。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"direction": map[string]any{"type": "string", "enum": []string{"up", "down"}, "description": "滚动方向"},
+				"pages":     map[string]any{"type": "integer", "minimum": 1, "maximum": 5, "description": "滚动页数，默认 1"},
+			},
+			"required":             []string{"direction"},
+			"additionalProperties": false,
+		},
+	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var input struct {
+			Direction string `json:"direction"`
+			Pages     int    `json:"pages,omitempty"`
+		}
+		if err := decode(request.Params.Arguments, &input); err != nil || (input.Direction != "up" && input.Direction != "down") {
+			return textResult("滚动方向无效，需要 up 或 down", true), nil
+		}
+		if input.Pages == 0 {
+			input.Pages = 1
+		}
+		if input.Pages < 1 || input.Pages > 5 {
+			return textResult("滚动页数无效，需要 1 到 5", true), nil
+		}
+		if err := runtime.ScrollScreen(ctx, input.Direction, input.Pages); err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		return textResult("已滚动当前投屏页面", false), nil
 	})
 	server.AddTool(&mcp.Tool{
 		Name:        "stop_cast",

@@ -90,6 +90,6 @@ ASR/TTS、控制 MCP、设备 MCP 和本地浏览器渲染分别已有真实联�
 
 ## 多任务工具迁移（Issue #18）
 
-控制服务升级后，在灵矽管理端重新发现并保存 `list_tasks/get_task/send_message/new_task`，替换旧三个工具，提示词使用 [协议文档](protocol.md#灵矽配置与部署)。新回执含任务引用和命令编号，Agent 应读取 JSON 字段后简短转述；查询结果和旧消息摘录不作为本轮完成证明。工具失败或 unknown 时先查询，不自动重复提交。
+控制服务升级后，在灵矽管理端重新发现并保存控制 MCP 的 `list_tasks/get_task/send_message/new_task` 和设备 MCP 的 `cast_screen/scroll_screen/stop_cast/scan_screens`，替换旧工具，提示词使用 [协议文档](protocol.md#灵矽配置与部署)。新回执含任务引用和命令编号，Agent 应读取 JSON 字段后简短转述；查询结果和旧消息摘录不作为本轮完成证明。工具失败或 unknown 时先查询，不自动重复提交。
 
 Mac 语音桥只处理身份、音频和语音事件；云端 Agent 通过控制 MCP 创建、查询或继续任务，再把 `display_url` 交给独立设备 MCP 的 `cast_screen`。任务展示页支持多 Session，切换展示不改变消息发送目标。修改角色或 MCP 配置后，必须重新连接语音设备，不能用旧连接的工具缓存判断新配置是否生效。

@@ -89,7 +89,7 @@ ngrok http 8000
 
 1. 控制 MCP：`https://<ngrok-domain>/mcp`，Header `Authorization: Bearer <CONTROL_TOKEN>`。
 2. 设备 MCP：`https://<ngrok-domain>/device/mcp`，当前原型不配置控制令牌。
-3. 发现并保存控制工具 `list_tasks/get_task/send_message/new_task` 和设备工具 `cast_screen/scroll_screen/stop_cast/scan_screens`。
+3. 发现并保存控制工具 `list_tasks/get_task/send_message/new_task` 和设备工具 `cast_screen/scroll_screen/stop_cast/scan_screens/capture_screen/inspect_browser/click_browser`。
 4. 按 [协议中的角色配置](protocol.md#灵矽配置与部署) 设置工具使用方式；保存后让语音设备断开并重连。
 5. 按 [语音指南](voice.md) 启动并绑定 Mac。控制工具返回 `display_url` 后，智能体必须把完整地址原样交给设备 `cast_screen`。
 

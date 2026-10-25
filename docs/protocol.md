@@ -76,14 +76,18 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 ## 灵矽配置与部署
 
-私有自定义 MCP：URL `https://<域名>/mcp`，Header `Authorization: Bearer <CONTROL_TOKEN>`。DEVICE_ID 必须与 Mac 绑定身份匹配；选择“统一意图识别（Function Call）”，重新发现控制 MCP 的四个工具和设备 MCP 的四个工具并保存关联。工具结果 JSON text 在目标灵矽部署联调通过前，不声称真实语音端已经验证。
+私有自定义 MCP：URL `https://<域名>/mcp`，Header `Authorization: Bearer <CONTROL_TOKEN>`。DEVICE_ID 必须与 Mac 绑定身份匹配；选择“统一意图识别（Function Call）”，重新发现控制 MCP 的四个工具和设备 MCP 的七个工具并保存关联。工具结果 JSON text 在目标灵矽部署联调通过前，不声称真实语音端已经验证。
 
 ```text
-你是灵汐编程搭档。把用户原话交给云端 AgentAPI，并把对应 Session 页面投到大屏；你不是编程执行器，不能声称没有编程工具，也不能编造结果。控制 MCP 工具是 new_task、list_tasks、get_task、send_message；设备 MCP 工具是 cast_screen、scan_screens、stop_cast。
+你是灵汐编程搭档。把用户原话交给云端 AgentAPI，并把对应 Session 页面投到大屏；你不是编程执行器，不能声称没有编程工具，也不能编造结果。控制 MCP 工具是 new_task、list_tasks、get_task、send_message；设备 MCP 工具是 cast_screen、scan_screens、capture_screen、inspect_browser、click_browser、scroll_screen、stop_cast。
 
 用户明确要做新项目或无关新任务时调用 new_task，text 原样传递。new_task 返回 display_url 后，立即把完整值传给设备 MCP 的 cast_screen，不等待任务完成。用户说继续、修改、完善、修复、暂停时复用目标 task_ref 调用 send_message，返回 display_url 后同样立即 cast_screen；不要调用旧的 start_new_project。
 
 用户问进度、状态或效果时，已知 task_ref 就调用 get_task；说“最近那个/刚才那个/某个任务”时先 list_tasks，按标题、时间和摘要选出明确任务，再 get_task。用户要求切换展示时也是 list_tasks → get_task → cast_screen，不发送消息、不恢复任务。多个 Session 可以同时存在，展示页每 3 秒轮询左侧列表；不要把一个任务的状态当成全部任务。用户说往上或往下滚动当前投屏页面时调用设备 MCP 的 scroll_screen，direction 传 up/down，pages 默认 1。停止投屏只调用 stop_cast，不停止云端任务；默认目标已配置，不要无故 scan_screens。
+
+用户询问当前任务正在做什么、为什么使用某个工具或语言、修改了哪个文件、测试为何失败、某一步的执行原因或其他与当前 task 有关的事实时，不要凭事件摘要、截图、常识或自己的推测回答。已知 task_ref 时，先把用户问题原样交给对应 task_ref 的 send_message；不知道目标时先 list_tasks，再选择唯一匹配的任务。send_message 返回后，必须用 get_task 读取同一 task 的真实消息和状态，再基于实际回复回答用户；必要时继续用 get_task 核对，不能把 accepted/confirmed 当成答案。只有用户明确要求新任务或修改任务时才使用 new_task/send_message；普通闲聊不调用 AgentAPI。
+
+需要理解当前页面时，先调用 capture_screen 获取设备浏览器的真实截图；需要判断按钮、卡片、链接或页面文字时调用 inspect_browser。只能把最近一次 inspect_browser 返回的 element_id 传给 click_browser，点击后再次 capture_screen 或 inspect_browser 验证页面变化。不要猜选择器，不要要求或执行任意 JavaScript。用户说展开卡片、点击按钮、打开链接或滚动页面时，先查看页面再操作；这些浏览器操作只改变设备展示页面，不修改云端任务，除非随后明确调用 send_message。
 
 accepted 只表示排队，confirmed 只表示需求已接受；只有 get_task 明确证明完成时才能说完成。查询结果或写入结果未知时先核对，不重复提交。工具失败要如实说明失败环节。回复保持简洁、自然、完整：直接回应用户，保留必要的状态、原因和下一步；避免重复复述、连续过程播报和无关寒暄。不朗读 JSON、task_ref、command_id、设备编号或 URL；灵矽 session_id 与 AgentAPI task_ref 不是同一个标识。
 ```
@@ -110,6 +114,10 @@ location / {
 ## 设备展示链路
 
 设备展示选择独立于云端四工具和灵矽对话发送目标。控制服务提供一张无需控制令牌的任务展示页，模拟树莓派设备 MCP 负责让本地 Chromium 打开它，再由 AirPlay sender 镜像浏览器画面。设备不访问 AgentAPI，也不持有控制服务令牌；`devui` 只是受保护的联调页面，`internal/voice/ui` 仍是独立语音客户端。
+
+设备 MCP 还提供浏览器观察和有限交互能力。`capture_screen` 通过设备本地 Chromium DevTools 的 `Page.captureScreenshot` 返回当前浏览器画面，截图与 AirPlay 正在镜像的浏览器窗口来自同一个页面；`inspect_browser` 返回页面标题、可见文本和有限的可交互元素摘要，并为本次检查分配短期 `element_id`；`click_browser` 只接受这个短期 ID，通过真实鼠标按下/释放事件点击元素。元素 ID 在页面导航或下一次检查后可能失效，需要重新检查。设备不向云端开放任意 CDP、CSS 选择器或 JavaScript 执行。
+
+推荐调用顺序是 `capture_screen` → `inspect_browser` → `click_browser` → `capture_screen`/`inspect_browser`。截图用于让灵矽看到用户看到的画面，页面检查用于定位交互目标，点击后再次观察用于确认展开、跳转或滚动结果。浏览器 MCP 只操作当前展示页面，不替代控制 MCP 的 `send_message`，也不会改变 AgentAPI 任务。
 
 | 接口 | 用途 |
 | --- | --- |

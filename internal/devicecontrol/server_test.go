@@ -47,6 +47,7 @@ type fakeRuntime struct {
 	castURL         string
 	scrollDirection string
 	scrollPages     int
+	clickedID       string
 	stopped         int
 }
 
@@ -66,6 +67,21 @@ func (f *fakeRuntime) ScrollScreen(_ context.Context, direction string, pages in
 	defer f.mu.Unlock()
 	f.scrollDirection = direction
 	f.scrollPages = pages
+	return nil
+}
+
+func (f *fakeRuntime) CaptureScreen(context.Context) (BrowserCapture, error) {
+	return BrowserCapture{URL: "https://public.example/display/", Title: "Task", PNG: []byte("png")}, nil
+}
+
+func (f *fakeRuntime) InspectBrowser(context.Context) (BrowserInspection, error) {
+	return BrowserInspection{URL: "https://public.example/display/", Title: "Task", Elements: []BrowserElement{{ID: "e1", Tag: "button", Text: "展开"}}}, nil
+}
+
+func (f *fakeRuntime) ClickBrowser(_ context.Context, elementID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clickedID = elementID
 	return nil
 }
 
@@ -107,7 +123,7 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	defer peer.Close()
 
 	tools, err := peer.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 4 {
+	if err != nil || len(tools.Tools) != 7 {
 		t.Fatalf("device tools: %v %v", tools, err)
 	}
 	if _, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "scan_screens"}); err != nil {
@@ -138,6 +154,37 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	runtime.mu.Unlock()
 	if direction != "down" || pages != 2 {
 		t.Fatalf("scroll request: %q %d", direction, pages)
+	}
+	inspect, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "inspect_browser"})
+	if err != nil || inspect.IsError {
+		t.Fatalf("inspect_browser: %v %v", inspect, err)
+	}
+	capture, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "capture_screen"})
+	if err != nil || capture.IsError || len(capture.Content) != 2 {
+		t.Fatalf("capture_screen: %v %v", capture, err)
+	}
+	if image, ok := capture.Content[1].(*mcp.ImageContent); !ok || string(image.Data) != "png" {
+		t.Fatalf("capture image: %#v", capture.Content[1])
+	}
+	click, err := peer.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "click_browser",
+		Arguments: map[string]any{"element_id": "e1"},
+	})
+	if err != nil || click.IsError {
+		t.Fatalf("click_browser: %v %v", click, err)
+	}
+	runtime.mu.Lock()
+	clicked := runtime.clickedID
+	runtime.mu.Unlock()
+	if clicked != "e1" {
+		t.Fatalf("click element: %q", clicked)
+	}
+	badClick, err := peer.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "click_browser",
+		Arguments: map[string]any{"element_id": "button"},
+	})
+	if err != nil || !badClick.IsError {
+		t.Fatalf("invalid click element: %v %v", badClick, err)
 	}
 	bad, err := peer.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "cast_screen",

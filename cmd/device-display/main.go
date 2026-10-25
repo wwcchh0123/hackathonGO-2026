@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,6 +178,18 @@ func (r *runtime) ScrollScreen(ctx context.Context, direction string, pages int)
 	return r.browser.Scroll(ctx, direction, pages)
 }
 
+func (r *runtime) CaptureScreen(ctx context.Context) (devicecontrol.BrowserCapture, error) {
+	return r.browser.Capture(ctx)
+}
+
+func (r *runtime) InspectBrowser(ctx context.Context) (devicecontrol.BrowserInspection, error) {
+	return r.browser.Inspect(ctx)
+}
+
+func (r *runtime) ClickBrowser(ctx context.Context, elementID string) error {
+	return r.browser.Click(ctx, elementID)
+}
+
 func (r *runtime) StopCast(context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -336,7 +349,245 @@ func (b *browser) Scroll(ctx context.Context, direction string, pages int) error
 
 type devtoolsTarget struct {
 	Type                 string `json:"type"`
+	URL                  string `json:"url"`
+	Title                string `json:"title"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+}
+
+type devtoolsResponse struct {
+	ID     int             `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+}
+
+// Capture takes the same Chromium surface that the AirPlay sender mirrors.
+// Keeping this on the simulated device is intentional: the cloud can inspect
+// the device browser without receiving the browser's debugging endpoint.
+func (b *browser) Capture(ctx context.Context) (devicecontrol.BrowserCapture, error) {
+	target, err := b.page(ctx)
+	if err != nil {
+		return devicecontrol.BrowserCapture{}, err
+	}
+	var result struct {
+		Data string `json:"data"`
+	}
+	if err := b.command(ctx, target, 1, "Page.captureScreenshot", map[string]any{
+		"format":      "png",
+		"fromSurface": true,
+	}, &result); err != nil {
+		return devicecontrol.BrowserCapture{}, fmt.Errorf("获取浏览器截图: %w", err)
+	}
+	png, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(png) == 0 {
+		return devicecontrol.BrowserCapture{}, fmt.Errorf("浏览器返回了无效截图")
+	}
+	if len(png) > 8<<20 {
+		return devicecontrol.BrowserCapture{}, fmt.Errorf("浏览器截图过大")
+	}
+	return devicecontrol.BrowserCapture{URL: target.URL, Title: target.Title, PNG: png}, nil
+}
+
+const inspectBrowserScript = `(() => {
+  const old = document.querySelectorAll('[data-linxi-element-id]');
+  old.forEach((node) => node.removeAttribute('data-linxi-element-id'));
+  const selector = 'button,a[href],input,textarea,select,[role="button"],[role="link"],[role="tab"],[aria-expanded],[onclick]';
+  const visible = (node) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const compact = (value, limit) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+  const nodes = Array.from(document.querySelectorAll(selector)).filter(visible).slice(0, 80);
+  const elements = nodes.map((node, index) => {
+    const id = 'e' + (index + 1);
+    node.setAttribute('data-linxi-element-id', id);
+    const rect = node.getBoundingClientRect();
+    return {
+      element_id: id,
+      tag: node.tagName.toLowerCase(),
+      role: compact(node.getAttribute('role'), 40),
+      label: compact(node.getAttribute('aria-label') || node.getAttribute('title') || node.getAttribute('placeholder'), 120),
+      text: node.matches('input,textarea') ? '' : compact(node.innerText || node.textContent, 160),
+      bounds: {x: rect.x, y: rect.y, width: rect.width, height: rect.height}
+    };
+  });
+  return {
+    url: location.href,
+    title: document.title,
+    visible_text: compact(document.body && document.body.innerText, 6000),
+    elements
+  };
+})()`
+
+// Inspect runs a fixed, read-only DOM projection inside Chromium. It exposes
+// visible controls and text without forwarding a general-purpose JavaScript
+// or selector API to the cloud agent.
+func (b *browser) Inspect(ctx context.Context) (devicecontrol.BrowserInspection, error) {
+	target, err := b.page(ctx)
+	if err != nil {
+		return devicecontrol.BrowserInspection{}, err
+	}
+	var result struct {
+		Result struct {
+			Value devicecontrol.BrowserInspection `json:"value"`
+		} `json:"result"`
+	}
+	if err := b.command(ctx, target, 1, "Runtime.evaluate", map[string]any{
+		"expression":    inspectBrowserScript,
+		"returnByValue": true,
+		"awaitPromise":  false,
+	}, &result); err != nil {
+		return devicecontrol.BrowserInspection{}, fmt.Errorf("读取浏览器页面: %w", err)
+	}
+	if result.Result.Value.URL == "" {
+		return devicecontrol.BrowserInspection{}, fmt.Errorf("浏览器没有返回页面信息")
+	}
+	return result.Result.Value, nil
+}
+
+// Click resolves the short-lived ID created by Inspect, scrolls that element
+// into view, then sends a real mouse press/release pair through CDP. Resolving
+// the element again prevents an old coordinate from being applied after a
+// card expansion or page reflow.
+func (b *browser) Click(ctx context.Context, elementID string) error {
+	if !validElementID(elementID) {
+		return fmt.Errorf("元素 ID 无效")
+	}
+	target, err := b.page(ctx)
+	if err != nil {
+		return err
+	}
+	quoted, _ := json.Marshal(elementID)
+	script := fmt.Sprintf(`(() => {
+  const id = %s;
+  const node = Array.from(document.querySelectorAll('[data-linxi-element-id]')).find((item) => item.getAttribute('data-linxi-element-id') === id);
+  if (!node) return {found: false};
+  node.scrollIntoView({block: 'center', inline: 'center'});
+  const rect = node.getBoundingClientRect();
+  return {found: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
+})()`, quoted)
+	var result struct {
+		Result struct {
+			Value struct {
+				Found bool    `json:"found"`
+				X     float64 `json:"x"`
+				Y     float64 `json:"y"`
+			} `json:"value"`
+		} `json:"result"`
+	}
+	if err := b.command(ctx, target, 1, "Runtime.evaluate", map[string]any{
+		"expression":    script,
+		"returnByValue": true,
+	}, &result); err != nil {
+		return fmt.Errorf("定位页面元素: %w", err)
+	}
+	if !result.Result.Value.Found {
+		return fmt.Errorf("页面元素 %s 已失效，请先重新调用 inspect_browser", elementID)
+	}
+	if result.Result.Value.X < 0 || result.Result.Value.Y < 0 || result.Result.Value.X > float64(b.width) || result.Result.Value.Y > float64(b.height) {
+		return fmt.Errorf("页面元素 %s 不在可点击区域", elementID)
+	}
+	if err := b.command(ctx, target, 2, "Input.dispatchMouseEvent", map[string]any{
+		"type":       "mousePressed",
+		"x":          result.Result.Value.X,
+		"y":          result.Result.Value.Y,
+		"button":     "left",
+		"clickCount": 1,
+	}, nil); err != nil {
+		return fmt.Errorf("按下页面元素: %w", err)
+	}
+	if err := b.command(ctx, target, 3, "Input.dispatchMouseEvent", map[string]any{
+		"type":       "mouseReleased",
+		"x":          result.Result.Value.X,
+		"y":          result.Result.Value.Y,
+		"button":     "left",
+		"clickCount": 1,
+	}, nil); err != nil {
+		return fmt.Errorf("释放页面元素: %w", err)
+	}
+	return nil
+}
+
+func validElementID(raw string) bool {
+	if len(raw) < 2 || len(raw) > 4 || raw[0] != 'e' {
+		return false
+	}
+	for _, r := range raw[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (b *browser) page(ctx context.Context) (devtoolsTarget, error) {
+	if b.debugPort <= 0 {
+		return devtoolsTarget{}, fmt.Errorf("浏览器调试端口未配置")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for {
+		targets, err := b.targets(ctx)
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, target := range targets {
+				if target.Type == "page" && target.WebSocketDebuggerURL != "" {
+					return target, nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return devtoolsTarget{}, fmt.Errorf("连接浏览器调试接口: %w", lastErr)
+			}
+			return devtoolsTarget{}, fmt.Errorf("没有找到投屏页面")
+		}
+		select {
+		case <-ctx.Done():
+			return devtoolsTarget{}, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// command sends one bounded CDP request over a fresh page connection. A fresh
+// connection keeps requests isolated and lets the browser discard a stale
+// page target naturally after navigation.
+func (b *browser) command(ctx context.Context, target devtoolsTarget, id int, method string, params any, out any) error {
+	conn, _, err := websocket.Dial(ctx, target.WebSocketDebuggerURL, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "command complete")
+	body, err := json.Marshal(map[string]any{"id": id, "method": method, "params": params})
+	if err != nil {
+		return err
+	}
+	if err := conn.Write(ctx, websocket.MessageText, body); err != nil {
+		return err
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(readCtx)
+		if err != nil {
+			return err
+		}
+		var response devtoolsResponse
+		if err := json.Unmarshal(data, &response); err != nil || response.ID != id {
+			continue
+		}
+		if len(response.Error) > 0 && string(response.Error) != "null" {
+			return fmt.Errorf("CDP %s: %s", method, response.Error)
+		}
+		if out != nil && len(response.Result) > 0 {
+			if err := json.Unmarshal(response.Result, out); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func (b *browser) targets(ctx context.Context) ([]devtoolsTarget, error) {

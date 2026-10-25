@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,10 +21,48 @@ type Screen struct {
 	Name string `json:"name"`
 }
 
+// BrowserCapture is the current browser frame. The image is returned as MCP
+// image content so the Linxi agent can inspect exactly what is being mirrored
+// over AirPlay instead of reasoning from the task event stream alone.
+type BrowserCapture struct {
+	URL   string
+	Title string
+	PNG   []byte
+}
+
+// BrowserInspection contains a small, visible-only accessibility-oriented
+// page summary. ElementID values are short-lived and are valid until the next
+// inspect_browser call or a page navigation.
+type BrowserInspection struct {
+	URL         string           `json:"url"`
+	Title       string           `json:"title"`
+	VisibleText string           `json:"visible_text,omitempty"`
+	Elements    []BrowserElement `json:"elements"`
+}
+
+type BrowserElement struct {
+	ID     string        `json:"element_id"`
+	Tag    string        `json:"tag"`
+	Role   string        `json:"role,omitempty"`
+	Label  string        `json:"label,omitempty"`
+	Text   string        `json:"text,omitempty"`
+	Bounds BrowserBounds `json:"bounds"`
+}
+
+type BrowserBounds struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
 type Runtime interface {
 	ScanScreens(context.Context) ([]Screen, error)
 	CastScreen(context.Context, string) error
 	ScrollScreen(context.Context, string, int) error
+	CaptureScreen(context.Context) (BrowserCapture, error)
+	InspectBrowser(context.Context) (BrowserInspection, error)
+	ClickBrowser(context.Context, string) error
 	StopCast(context.Context) error
 }
 
@@ -31,7 +70,7 @@ type Runtime interface {
 // reverse proxy can mount this handler under /device/ while the control MCP
 // remains mounted under /mcp on the same public ngrok endpoint.
 func Handler(runtime Runtime) http.Handler {
-	server := mcp.NewServer(&mcp.Implementation{Name: "linxi-device-display", Version: "0.1.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "linxi-device-display", Version: "0.2.0"}, nil)
 	server.AddTool(&mcp.Tool{
 		Name:        "scan_screens",
 		Description: "扫描本地局域网可用的投屏目标，返回 screen_id 和名称。",
@@ -97,6 +136,61 @@ func Handler(runtime Runtime) http.Handler {
 			return textResult(err.Error(), true), nil
 		}
 		return textResult("已滚动当前投屏页面", false), nil
+	})
+	server.AddTool(&mcp.Tool{
+		Name:        "capture_screen",
+		Description: "获取设备浏览器当前画面的截图。它与 AirPlay 投屏画面相同，用于理解用户正在看的内容；需要页面结构时再调用 inspect_browser。",
+		InputSchema: emptySchema(),
+	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		capture, err := runtime.CaptureScreen(ctx)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		if len(capture.PNG) == 0 {
+			return textResult("当前没有可用的浏览器画面", true), nil
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("当前页面：%s\n标题：%s", capture.URL, capture.Title)},
+			&mcp.ImageContent{Data: capture.PNG, MIMEType: "image/png"},
+		}}, nil
+	})
+	server.AddTool(&mcp.Tool{
+		Name:        "inspect_browser",
+		Description: "读取当前投屏浏览器的页面标题、可见文本和可交互元素。元素会返回短期 element_id，后续可交给 click_browser；不要猜 CSS 选择器。",
+		InputSchema: emptySchema(),
+	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		inspection, err := runtime.InspectBrowser(ctx)
+		if err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		data, err := json.Marshal(inspection)
+		if err != nil {
+			return textResult("无法编码页面检查结果", true), nil
+		}
+		return textResult(string(data), false), nil
+	})
+	server.AddTool(&mcp.Tool{
+		Name:        "click_browser",
+		Description: "点击当前浏览器页面中 inspect_browser 返回的 element_id，例如展开卡片、按钮或链接。点击后应再次调用 capture_screen 或 inspect_browser 验证结果。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"element_id": map[string]any{"type": "string", "pattern": `^e[0-9]{1,3}$`, "description": "最近一次 inspect_browser 返回的元素 ID"},
+			},
+			"required":             []string{"element_id"},
+			"additionalProperties": false,
+		},
+	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var input struct {
+			ElementID string `json:"element_id"`
+		}
+		if err := decode(request.Params.Arguments, &input); err != nil || !validElementID(input.ElementID) {
+			return textResult("元素 ID 无效，请先调用 inspect_browser，再使用其中的 element_id", true), nil
+		}
+		if err := runtime.ClickBrowser(ctx, input.ElementID); err != nil {
+			return textResult(err.Error(), true), nil
+		}
+		return textResult("已点击页面元素，请重新查看浏览器画面确认结果", false), nil
 	})
 	server.AddTool(&mcp.Tool{
 		Name:        "stop_cast",
@@ -166,6 +260,18 @@ func decode(arguments json.RawMessage, out any) error {
 func validURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+func validElementID(raw string) bool {
+	if len(raw) < 2 || len(raw) > 4 || raw[0] != 'e' {
+		return false
+	}
+	for _, r := range raw[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func textResult(text string, failed bool) *mcp.CallToolResult {

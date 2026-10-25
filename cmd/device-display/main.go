@@ -48,6 +48,7 @@ type config struct {
 	AirPlayVideoCode  string
 	Doubletake        string
 	BrowserDebugPort  int
+	StageURL          string
 }
 
 type runtime struct {
@@ -98,6 +99,22 @@ func run() error {
 			cancel()
 		}
 	}()
+	if cfg.StageURL != "" {
+		local, err := net.Listen("tcp", "127.0.0.1:8788")
+		if err != nil {
+			server.Close()
+			return fmt.Errorf("listen display wake: %w", err)
+		}
+		wakeServer := &http.Server{Handler: rt.wakeHandler(), ReadHeaderTimeout: 5 * time.Second}
+		defer wakeServer.Close()
+		go func() {
+			if err := wakeServer.Serve(local); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("display wake server stopped", "error", err)
+				cancel()
+			}
+		}()
+		go rt.startStage(ctx)
+	}
 
 	slog.Info("device MCP ready", "listen", cfg.ListenAddr, "airplay_target", cfg.AirPlayTarget, "receiver", cfg.AirPlayName)
 	<-ctx.Done()
@@ -128,22 +145,32 @@ func (r *runtime) CastScreen(ctx context.Context, rawURL string) error {
 	if r.cfg.AirPlayTarget == "" {
 		return fmt.Errorf("没有配置 AirPlay 投屏目标")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cfg.StageURL != "" {
+		if err := r.setStageView(ctx, rawURL); err != nil {
+			return err
+		}
+		return r.ensureStageLocked()
+	}
 	if err := r.browser.Open(r.base, rawURL); err != nil {
 		return err
 	}
-	r.mu.Lock()
+	r.startAirPlayLocked()
+	slog.Info("cast screen", "url", rawURL, "target", r.cfg.AirPlayName)
+	return nil
+}
+
+func (r *runtime) startAirPlayLocked() {
 	if r.airplayCancel == nil {
 		airplayCtx, cancel := context.WithCancel(r.base)
 		r.airplayCancel = cancel
 		go func() {
-			if err := r.cast.Run(airplayCtx); err != nil && ctx.Err() == nil {
+			if err := r.cast.Run(airplayCtx); err != nil && airplayCtx.Err() == nil {
 				slog.Error("AirPlay sender stopped", "error", err)
 			}
 		}()
 	}
-	r.mu.Unlock()
-	slog.Info("cast screen", "url", rawURL, "target", r.cfg.AirPlayName)
-	return nil
 }
 
 func (r *runtime) ScrollScreen(ctx context.Context, direction string, pages int) error {
@@ -152,9 +179,9 @@ func (r *runtime) ScrollScreen(ctx context.Context, direction string, pages int)
 
 func (r *runtime) StopCast(context.Context) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	cancel := r.airplayCancel
 	r.airplayCancel = nil
-	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
@@ -168,8 +195,9 @@ type browser struct {
 	width     int
 	height    int
 	debugPort int
+	url       string
 	cancel    context.CancelFunc
-	done      <-chan error
+	done      <-chan struct{}
 }
 
 func (b *browser) Open(parent context.Context, rawURL string) error {
@@ -203,11 +231,16 @@ func (b *browser) Open(parent context.Context, rawURL string) error {
 		cancel()
 		return fmt.Errorf("启动浏览器: %w", err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		// Closing broadcasts a persistent exit state to every observer.
+		close(done)
+	}()
 	b.mu.Lock()
 	b.cancel = cancel
 	b.done = done
+	b.url = rawURL
 	b.mu.Unlock()
 	return nil
 }
@@ -362,9 +395,16 @@ func loadConfig() (config, error) {
 		AirPlayVideoCode:  env("AIRPLAY_VIDEO_CODEC", "h264"),
 		Doubletake:        env("DOUBLETAKE_BIN", "doubletake"),
 		BrowserDebugPort:  intEnv("BROWSER_DEBUG_PORT", 9222),
+		StageURL:          os.Getenv("DEVICE_STAGE_URL"),
 	}
 	if c.Width < 320 || c.Height < 240 {
 		return c, fmt.Errorf("SCREEN_WIDTH and SCREEN_HEIGHT are too small")
+	}
+	if c.StageURL != "" {
+		u, err := url.Parse(c.StageURL)
+		if err != nil || u.Scheme != "http" || u.User != nil || !net.ParseIP(u.Hostname()).IsLoopback() {
+			return c, fmt.Errorf("DEVICE_STAGE_URL must be a loopback http URL")
+		}
 	}
 	if c.AirPlayCredential != "" && filepath.Dir(c.AirPlayCredential) != "." {
 		if err := os.MkdirAll(filepath.Dir(c.AirPlayCredential), 0o700); err != nil {

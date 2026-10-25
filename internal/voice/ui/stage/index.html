@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>小灵</title><link rel="stylesheet" href="/stage/stage.css"><script type="module" src="/stage/stage.js"></script></head>
+<body data-phase="offline">
+<iframe id="content" title="编程过程与应用预览" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer" hidden></iframe>
+<main class="hero">
+ <section class="character" aria-label="小灵卡通人物">
+  <aside id="speech" class="speech" role="status" aria-live="polite" aria-atomic="true" hidden>
+   <p id="speech-text" tabindex="0"></p>
+  </aside>
+  <div class="thought" aria-hidden="true"><b></b><b></b><b></b></div>
+  <svg class="avatar" viewBox="88 60 940 1420" role="img" aria-label="小灵，一只正面看向你的蓝紫色小狐狸">
+   <defs>
+    <image id="fox-art" href="/stage/fox/front.png" width="1024" height="1536"/>
+    <!-- Overlap the neck layers so the head can tilt without exposing a seam. -->
+    <clipPath id="head-region"><rect width="670" height="666"/></clipPath>
+    <mask id="body-region" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1536">
+     <rect width="1024" height="1536" fill="white"/>
+     <rect width="670" height="638" fill="black"/>
+    </mask>
+    <linearGradient id="eyelid-fur" x1="0" y1="0" x2="0" y2="1">
+     <stop stop-color="#f9f6ef"/><stop offset="1" stop-color="#eeedf5"/>
+    </linearGradient>
+   </defs>
+   <ellipse class="ground" cx="510" cy="1415" rx="285" ry="20" fill="#414783" opacity=".1"/>
+   <g class="fox-rig">
+    <use href="#fox-art" mask="url(#body-region)"/>
+    <g class="head">
+     <use href="#fox-art" clip-path="url(#head-region)"/>
+     <g class="eyelids" opacity="0">
+      <path d="M260 477 C273 439 305 432 329 450 C351 467 357 508 347 536 C321 550 282 549 265 528Z" fill="url(#eyelid-fur)"/>
+      <path d="M438 477 C450 439 481 432 508 450 C531 468 538 508 526 536 C500 550 461 549 443 528Z" fill="url(#eyelid-fur)"/>
+      <path d="M270 497 Q308 527 347 497 M446 497 Q484 527 525 497" fill="none" stroke="#26386c" stroke-width="7" stroke-linecap="round"/>
+     </g>
+     <g id="mouth" opacity="0">
+      <path id="mouth-opening" fill="#242b59" d="M330 575 Q350 619 396 601 Q441 619 462 575 Q450 625 396 630 Q342 625 330 575Z"/>
+      <path id="tongue" fill="#d590b9" d="M370 620 Q396 610 422 620 Q396 637 370 620Z"/>
+     </g>
+    </g>
+   </g>
+  </svg>
+ </section>
+</main>
+</body></html>

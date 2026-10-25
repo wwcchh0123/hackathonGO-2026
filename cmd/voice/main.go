@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,7 +50,10 @@ func main() {
 	gateway := linx.Gateway{Identity: id, BinaryHash: hex.EncodeToString(hash.Sum(nil))}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	s := &voice.Server{Gateway: gateway, AudioAvailable: voicecodec.Available(), Logf: log.Printf}
+	s := &voice.Server{Gateway: gateway, AudioAvailable: voicecodec.Available(), Logf: log.Printf,
+		DisplayAllowedHosts: strings.Split(os.Getenv("DISPLAY_ALLOWED_HOSTS"), ","),
+		DisplayWakeURL:      os.Getenv("DEVICE_WAKE_URL"),
+	}
 	log.Printf("Mac 软件设备 ID：%s；身份保存在 %s/identity.json", id.DeviceID, *dir)
 	if *pairOnly {
 		if err = s.Pair(ctx); err != nil && ctx.Err() == nil {

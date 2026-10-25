@@ -224,3 +224,25 @@ Mac 语音终端身份、OTA 和语音协议保持独立，当前不声明 featu
 ```
 
 ready 的 sample_rate 是返回音频采样率；桥按云端 hello 的参数解码 Opus，向浏览器发送该采样率的单声道 PCM16LE 二进制帧。浏览器按每帧实际样本数安排播放，不假设返回音频也是 60 ms。下行文本事件包括 status / activation / ready / stt / tts / notify / ended / error；仅转发白名单语音字段，不转发原始 OTA 响应。正常 tts.stop 等缓冲播放完毕，is_aborted=true 立即清空；录音及本地打断期间丢弃旧回复。云端 goodbye 对应正常 ended，不提示配置错误。断线立即停止采集和播放，用户点击重新连接时重新获取 OTA 凭据，不自动补发上一段录音。
+
+## 本地人物展示与语音联动
+
+`voice` 在原有 8090 回环 HTTP 服务提供 `/stage/` 人物页面。人物全屏时显示小灵及动作；仅在 `speaking` 且 `text` 非空时显示语音文字气泡，随当前播放句子更新，结束、打断或断线后收起。文字以纯文本渲染，长句换行并允许滚动；嵌入任务页时，气泡显示在右下角人物上方。不显示品牌、介绍、连接提示或操作按钮；完整对话记录和操作保留在语音控制页。它只是现有语音连接的观察者，不获取设备 token、不建立第二条灵矽连接，也不调用 AgentAPI。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /stage/` | 常驻人物页面；可嵌入允许域名内的任务展示页 |
+| `GET /api/stage` | 当前人物快照 |
+| `GET /api/stage/events` | SSE；连接先发当前快照，之后推送最新状态；最多 8 个观察者，慢观察者只保留最新帧 |
+| `POST /api/stage/view` | `{ "url": "https://允许域名/display/?task_ref=..." }` 切换内容；空字符串返回人物全屏 |
+| `POST /api/stage/wake` | 唤醒配置的本地投屏服务；未配置时仅保留本地人物预览 |
+
+人物快照字段为 `connected`、`phase`、`text`（当前播放句子）、`user_text`、`level`（0～1）、`turn_id`、`view_url`。`phase` 包含 `offline/idle/listening/thinking/speaking`。只在内存保留最新快照；断开语音清除字幕及嘴型，保留当前任务展示 URL。
+
+上述接口保留 voice 的回环 Host 限制。SSE 拒绝显式跨域 Origin；写接口只允许同源浏览器，或不带 Origin 且带 `X-Linxi-Device: 1` 的本地服务请求。非空展示 URL 必须为无用户名/密码的 HTTP(S) URL，主机在 `DISPLAY_ALLOWED_HOSTS` 中；未配置名单时不允许嵌入任务页。容器仍只向 Mac 的回环地址发布语音端口，不经 ngrok 暴露人物状态和字幕。
+
+语音本地 WebSocket 的 TTS 事件增加 `turn_id`。浏览器按实际排队音频及句子计算嘴型，最多每 80 ms 回报一次 `{ "type":"playback", "turn_id":3, "state":"playing", "level":0.5, "text":"你好" }`。播放状态为 `playing/buffering/idle`；此消息只更新人物，不上传灵矽。正常 `tts.stop` 表示云端音频发送结束，人物仍等待播放队列完成。再次录音、打断、断开和新回复都会使旧代际失效。
+
+浏览器默认将人物动作提前 120 ms，以补偿 AirPlay 画面延迟；可在语音页面“画面与声音同步”中调节 0～400 ms。它是音量驱动的二维动画，不是音素口型。声音仍在 Mac 浏览器播放；当前按钮唤醒不包含持续唤醒词检测。
+
+`device-display` 设置 `DEVICE_STAGE_URL=http://127.0.0.1:8090/stage/` 后启用常驻页面模式：启动时等待 voice 就绪并开始投屏，`cast_screen` 更新人物页中的内容区域，`scroll_screen` 继续向页面中央发送滚轮，`stop_cast` 关闭浏览器及 AirPlay，下一次本地唤醒可重新打开。设备另外在容器回环 `127.0.0.1:8788` 提供 `POST /wake`，只接受回环请求、不带 Origin、携带 `X-Linxi-Device: 1`；该端口不发布、不挂到公网 MCP 路径。voice 用 `DEVICE_WAKE_URL=http://127.0.0.1:8788/wake` 调用它。未设置 `DEVICE_STAGE_URL` 时沿用原有直接打开任务 URL 的行为，云端 MCP 工具名称和参数不变。

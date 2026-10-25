@@ -115,7 +115,7 @@ func TestUploadRejectsInvalidMicrophoneSequences(t *testing.T) {
 				input <- frame
 			}
 			var recording, suppress atomic.Bool
-			err := upload(ctx, &peer{}, cloud, test.codec, input, &recording, &suppress)
+			err := upload(ctx, &peer{stage: &stageHub{}}, cloud, test.codec, input, &recording, &suppress)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v want=%q", err, test.want)
 			}

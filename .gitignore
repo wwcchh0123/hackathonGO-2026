@@ -5,6 +5,7 @@ node_modules/
 dist/
 bin/
 coverage.out
+coverage-production.out
 .data/
 *.tsbuildinfo
 playwright-report/

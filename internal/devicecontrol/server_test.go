@@ -3,6 +3,7 @@ package devicecontrol
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,34 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestDeviceControlValidationHelpers(t *testing.T) {
+	for _, raw := range []string{"https://example.test/a", "http://localhost:8080"} {
+		if !validURL(raw) {
+			t.Fatalf("valid URL rejected: %s", raw)
+		}
+	}
+	for _, raw := range []string{"", "file:///tmp/x", "javascript:alert(1)", "//host/path", "http://"} {
+		if validURL(raw) {
+			t.Fatalf("invalid URL accepted: %s", raw)
+		}
+	}
+	var input struct {
+		Value string `json:"value"`
+	}
+	if err := decode(json.RawMessage(`{"value":"ok"}`), &input); err != nil || input.Value != "ok" {
+		t.Fatalf("decode: %+v %v", input, err)
+	}
+	if err := decode(json.RawMessage(`{"unknown":true}`), &input); err == nil {
+		t.Fatal("unknown field accepted")
+	}
+	if got := textResult("done", false); got.IsError || len(got.Content) != 1 {
+		t.Fatalf("success result: %+v", got)
+	}
+	if got := textResult("failed", true); !got.IsError || len(got.Content) != 1 {
+		t.Fatalf("error result: %+v", got)
+	}
+}
 
 type fakeRuntime struct {
 	mu              sync.Mutex

@@ -18,16 +18,16 @@ import (
 )
 
 type HTTP struct {
-	base, key, agent, environment string
-	version                       int
-	vaultIDs                      []string
-	client                        anthropic.Client
+	agent, environment string
+	version            int
+	vaultIDs           []string
+	client             anthropic.Client
 }
 
 func NewHTTP(base, key, agent, environment string) *HTTP {
 	base = strings.TrimRight(base, "/") + "/"
 	return &HTTP{
-		base: base, key: key, agent: agent, environment: environment,
+		agent: agent, environment: environment,
 		client: anthropic.NewClient(
 			option.WithoutEnvironmentDefaults(),
 			option.WithBaseURL(base),
@@ -145,10 +145,6 @@ func (p *HTTP) SendMessage(ctx context.Context, id string, message Message) (Acc
 	// Some deployments return an empty acknowledgement; the stream reconciliation
 	// path can still match the accepted event by its correlation payload.
 	return AcceptedInput{}, nil
-}
-func (p *HTTP) Send(ctx context.Context, id, prompt string) error {
-	_, err := p.SendMessage(ctx, id, Message{Text: prompt})
-	return err
 }
 
 func (p *HTTP) Interrupt(ctx context.Context, id string) error {

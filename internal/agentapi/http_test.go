@@ -3,6 +3,7 @@ package agentapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,49 @@ import (
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
 )
+
+func TestProviderProjectionAndSSECompatibilityHelpers(t *testing.T) {
+	if sdkError("GET session", nil) != nil {
+		t.Fatal("nil provider error was wrapped")
+	}
+	for _, test := range []struct {
+		operation string
+		raw       string
+		status    int
+		ambiguous bool
+	}{
+		{operation: "POST message", raw: "request failed with status 503", status: 503, ambiguous: true},
+		{operation: "POST message", raw: "request failed with status 400", status: 400, ambiguous: false},
+		{operation: "GET session", raw: "network unavailable", status: 0, ambiguous: false},
+	} {
+		err := sdkError(test.operation, errors.New(test.raw))
+		var providerErr *Error
+		if !errors.As(err, &providerErr) || providerErr.StatusCode != test.status || providerErr.Ambiguous != test.ambiguous {
+			t.Fatalf("wrapped provider error: %+v", providerErr)
+		}
+	}
+	projected, err := decodeSession(`{"id":"ses_1","status":"idle","agent":{"runtime":"claudecode"},"metadata":{"device_id":"a"}}`)
+	if err != nil || projected.ID != "ses_1" || projected.Runtime != "claudecode" || projected.Metadata["device_id"] != "a" {
+		t.Fatalf("decode session: %+v %v", projected, err)
+	}
+	if _, err := decodeSession("{"); err == nil {
+		t.Fatal("invalid session JSON accepted")
+	}
+	var got events.Frame
+	err = DecodeSSE(strings.NewReader(": heartbeat\n\nid: evt_1\nevent: agent.message\ndata: {\"id\":\"evt_1\",\"type\":\"agent.message\",\"text\":\"hi\"}\n\n"), func(frame events.Frame) error {
+		got = frame
+		return nil
+	})
+	if err != io.EOF || got.ID != "evt_1" || got.Type != "agent.message" || !strings.Contains(string(got.Data), "hi") {
+		t.Fatalf("SSE decode: %+v %v", got, err)
+	}
+	if err := DecodeSSE(strings.NewReader("data: not-json\n\n"), func(events.Frame) error { return nil }); err == nil {
+		t.Fatal("invalid SSE JSON accepted")
+	}
+	if err := DecodeSSE(strings.NewReader("data: {\"id\":\"evt\"}\n\n"), func(events.Frame) error { return errors.New("stop") }); err == nil {
+		t.Fatal("SSE callback error swallowed")
+	}
+}
 
 func TestCloudContractAndUnmodifiedEvents(t *testing.T) {
 	raw := `{"id":"evt_1","type":"agent.message","unknown":{"keep":true},"content":[{"type":"text","text":"你好"}]}`
@@ -76,7 +120,7 @@ func TestCloudContractAndUnmodifiedEvents(t *testing.T) {
 	if err != nil || s.ID != "ses_1" {
 		t.Fatalf("create: %v %v", s, err)
 	}
-	if err = p.Send(ctx, s.ID, "hello"); err != nil {
+	if _, err = p.SendMessage(ctx, s.ID, Message{Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	if err = p.Interrupt(ctx, s.ID); err != nil {
@@ -248,6 +292,91 @@ func TestWriteErrorUncertaintyAndValidation(t *testing.T) {
 			err := NewHTTP(upstream.URL, "key", "a", "e").Validate(context.Background())
 			if (err == nil) != (runtime == "claudecode") {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestProviderFailuresAndAcceptedEventReceipts(t *testing.T) {
+	ctx := context.Background()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/sessions/accepted/events" {
+			fmt.Fprint(w, `{"data":[{"id":"input-1","type":"user.message"}]}`)
+			return
+		}
+		if r.URL.Path == "/v1/sessions/invalid" {
+			fmt.Fprint(w, `{"id":"other","status":"invalid"}`)
+			return
+		}
+		if r.URL.Path == "/v1/sessions" && r.Method == "POST" {
+			fmt.Fprint(w, `{}`)
+			return
+		}
+		w.WriteHeader(503)
+		fmt.Fprint(w, `{"error":{"message":"private detail"}}`)
+	}))
+	defer upstream.Close()
+	p := NewHTTP(upstream.URL, "private-key", "agent", "env")
+	accepted, err := p.SendMessage(ctx, "accepted", Message{Text: "hello", CommandID: "cmd"})
+	if err != nil || accepted.EventID != "input-1" {
+		t.Fatalf("accepted input: %+v %v", accepted, err)
+	}
+	if _, err := p.Create(ctx); !Uncertain(err) {
+		t.Fatalf("missing create receipt: %v", err)
+	}
+	if _, err := p.Status(ctx, "invalid"); err == nil {
+		t.Fatal("invalid status accepted")
+	}
+	checks := []func() error{
+		func() error { _, e := p.SendMessage(ctx, "bad", Message{Text: "hello"}); return e },
+		func() error { return p.Interrupt(ctx, "bad") },
+		func() error { _, e := p.Status(ctx, "bad"); return e },
+		func() error { _, e := p.ListSessions(ctx, SessionQuery{}); return e },
+		func() error { _, e := p.ListEvents(ctx, "bad", EventQuery{}); return e },
+		func() error { _, e := p.ListFiles(ctx, "bad", 1, ""); return e },
+		func() error { _, e := p.Artifacts(ctx, "bad"); return e },
+		func() error { return p.Stream(ctx, "bad", func(events.Frame) error { return nil }) },
+		func() error { return p.Validate(ctx) },
+	}
+	for i, check := range checks {
+		if err := check(); err == nil || strings.Contains(err.Error(), "private") {
+			t.Fatalf("check %d unsafe/missing error: %v", i, err)
+		}
+	}
+}
+
+func TestValidateFindsEnvironmentAcrossPagesAndRejectsArchivedResources(t *testing.T) {
+	for _, scenario := range []string{"pages", "archived-agent", "missing-env", "env-error", "page-error"} {
+		t.Run(scenario, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasPrefix(r.URL.Path, "/v1/agents/") {
+					if scenario == "archived-agent" {
+						fmt.Fprint(w, `{"id":"a","type":"agent","runtime":"claudecode","archived_at":"2026-10-24T00:00:00Z"}`)
+					} else {
+						fmt.Fprint(w, `{"id":"a","type":"agent","runtime":"claudecode"}`)
+					}
+					return
+				}
+				if scenario == "env-error" || scenario == "page-error" && r.URL.Query().Get("page") != "" {
+					w.WriteHeader(503)
+					return
+				}
+				if scenario == "missing-env" {
+					fmt.Fprint(w, `{"data":[]}`)
+					return
+				}
+				if r.URL.Query().Get("page") == "next" {
+					fmt.Fprint(w, `{"data":[{"id":"e","config":{"type":"cloud"}}]}`)
+				} else {
+					fmt.Fprint(w, `{"data":[{"id":"other","config":{"type":"cloud"}}],"next_page":"next"}`)
+				}
+			}))
+			defer upstream.Close()
+			err := NewHTTP(upstream.URL, "key", "a", "e").Validate(context.Background())
+			if (err == nil) != (scenario == "pages") {
+				t.Fatalf("validation error: %v", err)
 			}
 		})
 	}

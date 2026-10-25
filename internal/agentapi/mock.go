@@ -277,10 +277,7 @@ func (m *Mock) ListFiles(ctx context.Context, id string, limit int, page string)
 	}
 	return out, nil
 }
-func (m *Mock) Send(ctx context.Context, id, prompt string) error {
-	_, err := m.SendMessage(ctx, id, Message{Text: prompt})
-	return err
-}
+
 func (m *Mock) Interrupt(ctx context.Context, id string) error {
 	m.mu.Lock()
 	s := m.sessions[id]

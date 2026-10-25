@@ -42,17 +42,6 @@ func decodeArgs(raw json.RawMessage, target any) error {
 	return nil
 }
 
-// Handler keeps the single-controller entry point used by small embedders.
-// publicURL is optional for compatibility; when present, task mutations and
-// details include the URL that the device browser can open for projection.
-func Handler(c *session.Controller, publicURL ...string) http.Handler {
-	baseURL := ""
-	if len(publicURL) > 0 {
-		baseURL = publicURL[0]
-	}
-	return HandlerFor(func(string) *session.Controller { return c }, baseURL)
-}
-
 // HandlerFor keeps the MCP wire protocol independent from the control-plane
 // registry. The resolver is called only for tools/call and may route each
 // authenticated device to its own session controller.

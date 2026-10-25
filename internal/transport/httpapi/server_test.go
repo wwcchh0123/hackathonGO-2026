@@ -408,9 +408,10 @@ func TestMCPThroughReverseProxy(t *testing.T) {
 	upstream := httptest.NewServer(Handler(config.Config{Mode: "http", DeviceID: "test-device", Token: "test-control-token", DataDir: t.TempDir()}, c))
 	defer upstream.Close()
 	target, _ := url.Parse(upstream.URL)
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	director := proxy.Director
-	proxy.Director = func(r *http.Request) { director(r); r.Host = target.Host } // nginx Host $proxy_host
+	proxy := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) {
+		r.SetURL(target)
+		r.Out.Host = target.Host // nginx Host $proxy_host
+	}}
 	// SSE must flush even its first endpoint frame through the proxy.
 	proxy.FlushInterval = -1
 	entry := httptest.NewServer(proxy)

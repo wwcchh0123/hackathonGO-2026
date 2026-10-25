@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/device"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/session"
 )
 
@@ -174,3 +175,55 @@ func TestAdminViewsExposeFailedCommandAttention(t *testing.T) {
 }
 
 func ptr(v int) *int { return &v }
+
+func TestManagerPaginationSortingUnknownDevicesAndAttention(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := agentapi.NewMock(ctx)
+	manager := New(ctx, mock, "default", t.TempDir(), "http://example.test")
+	defer func() { cancel(); manager.Wait() }()
+	for _, id := range []string{"b", "a"} {
+		if err := manager.Touch(id, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !manager.Exists("a") || manager.Exists("unknown") {
+		t.Fatal("device existence mismatch")
+	}
+	if _, err := manager.GetTask(ctx, "unknown", "bad", session.DetailOptions{}); !errors.Is(err, ErrUnknownDevice) {
+		t.Fatal(err)
+	}
+	for _, sort := range []string{"device_id", "last_seen", "attention"} {
+		first, err := manager.ListDeviceViews(ctx, DeviceListOptions{Sort: sort, Limit: 1})
+		if err != nil || len(first.Data) != 1 || !first.HasMore || first.NextPage != "1" {
+			t.Fatalf("%s: %+v %v", sort, first, err)
+		}
+	}
+	empty, err := manager.ListDeviceViews(ctx, DeviceListOptions{Query: "missing", Page: "100"})
+	if err != nil || len(empty.Data) != 0 {
+		t.Fatalf("empty device page: %+v %v", empty, err)
+	}
+	for _, query := range []DeviceListOptions{{Page: "invalid"}, {Health: "offline"}, {Health: "online"}} {
+		_, err := manager.ListDeviceViews(ctx, query)
+		if (err != nil) != (query.Page == "invalid") {
+			t.Fatalf("device query: %+v %v", query, err)
+		}
+	}
+	if _, err := manager.ListAdminTasks(ctx, TaskListOptions{Page: "invalid"}); err == nil {
+		t.Fatal("bad task cursor accepted")
+	}
+	if _, err := manager.buildAdminTask(ctx, "missing", false, session.Task{}); !errors.Is(err, ErrUnknownDevice) {
+		t.Fatal(err)
+	}
+	task, err := manager.buildAdminTask(ctx, "a", true, session.Task{Status: "terminated", SummaryUnavailable: true})
+	if err != nil || len(task.Attention) != 2 {
+		t.Fatalf("task attention: %+v %v", task, err)
+	}
+	manager.DefaultController().State.Update(func(s *device.Snapshot) { s.Error = "broken"; s.StreamError = "broken"; s.PreviewError = "preview" })
+	overview, err := manager.Overview(ctx, "default")
+	if err != nil || len(overview.Attention) != 2 || overview.LastError != "broken" {
+		t.Fatalf("overview: %+v %v", overview, err)
+	}
+	if got := appendUnique(nil, ""); len(got) != 0 {
+		t.Fatal("empty attention added")
+	}
+}

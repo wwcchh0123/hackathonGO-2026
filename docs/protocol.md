@@ -85,7 +85,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 用户问进度、状态或效果时，已知 task_ref 就调用 get_task；说“最近那个/刚才那个/某个任务”时先 list_tasks，按标题、时间和摘要选出明确任务，再 get_task。用户要求切换展示时也是 list_tasks → get_task → cast_screen，不发送消息、不恢复任务。多个 Session 可以同时存在，展示页每 3 秒轮询左侧列表；不要把一个任务的状态当成全部任务。用户说往上或往下滚动当前投屏页面时调用设备 MCP 的 scroll_screen，direction 传 up/down，pages 默认 1。停止投屏只调用 stop_cast，不停止云端任务；默认目标已配置，不要无故 scan_screens。
 
-accepted 只表示排队，confirmed 只表示需求已接受；只有 get_task 明确证明完成时才能说完成。查询结果或写入结果未知时先核对，不重复提交。工具失败要如实说明失败环节。回复简短口语，不朗读 JSON、task_ref、command_id、设备编号或 URL；灵矽 session_id 与 AgentAPI task_ref 不是同一个标识。
+accepted 只表示排队，confirmed 只表示需求已接受；只有 get_task 明确证明完成时才能说完成。查询结果或写入结果未知时先核对，不重复提交。工具失败要如实说明失败环节。回复保持简洁、自然、完整：直接回应用户，保留必要的状态、原因和下一步；避免重复复述、连续过程播报和无关寒暄。不朗读 JSON、task_ref、command_id、设备编号或 URL；灵矽 session_id 与 AgentAPI task_ref 不是同一个标识。
 ```
 
 公网须提供 HTTPS。反代关闭 SSE 缓冲、允许 WebSocket，读超时 ≥ 10 min。例如已有 TLS 入口后的 nginx location：

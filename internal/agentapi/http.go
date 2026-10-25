@@ -15,12 +15,15 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/runtimeprofile"
 )
 
 type HTTP struct {
 	agent, environment string
 	version            int
 	vaultIDs           []string
+	runtime            string
+	defaultModel       Model
 	client             anthropic.Client
 }
 
@@ -28,6 +31,7 @@ func NewHTTP(base, key, agent, environment string) *HTTP {
 	base = strings.TrimRight(base, "/") + "/"
 	return &HTTP{
 		agent: agent, environment: environment,
+		runtime: "claudecode",
 		client: anthropic.NewClient(
 			option.WithoutEnvironmentDefaults(),
 			option.WithBaseURL(base),
@@ -42,22 +46,55 @@ func NewHTTP(base, key, agent, environment string) *HTTP {
 // WithVersion pins an existing agent snapshot; zero selects its current version.
 func (p *HTTP) WithVersion(version int) *HTTP { p.version = version; return p }
 func (p *HTTP) WithVaults(ids []string) *HTTP { p.vaultIDs = append([]string(nil), ids...); return p }
+func (p *HTTP) WithProfile(profile runtimeprofile.Profile) *HTTP {
+	p.agent, p.environment, p.version, p.runtime = profile.AgentID, profile.EnvironmentID, profile.AgentVersion, profile.Runtime
+	p.vaultIDs = append([]string(nil), profile.VaultIDs...)
+	p.defaultModel = Model{ID: profile.DefaultModel.ID, Effort: profile.DefaultModel.Effort}
+	return p
+}
 
 // Validate checks configured resources without creating or mutating them.
 // The calls use the version of anthropic-sdk-go recommended by AgentAPI.
 func (p *HTTP) Validate(ctx context.Context) error {
-	agent, err := p.client.Beta.Agents.Get(ctx, p.agent, anthropic.BetaAgentGetParams{})
+	return p.validate(ctx, runtimeprofile.Profile{Runtime: p.runtime, AgentID: p.agent, AgentVersion: p.version, EnvironmentID: p.environment, VaultIDs: p.vaultIDs, DefaultModel: runtimeprofile.Model{ID: p.defaultModel.ID, Effort: p.defaultModel.Effort}})
+}
+
+// ValidateProfile verifies immutable upstream resources before serving traffic.
+func (p *HTTP) ValidateProfile(ctx context.Context, profile runtimeprofile.Profile) error {
+	return p.validate(ctx, profile)
+}
+
+func (p *HTTP) validate(ctx context.Context, profile runtimeprofile.Profile) error {
+	params := anthropic.BetaAgentGetParams{}
+	if profile.AgentVersion > 0 {
+		params.Version = param.NewOpt(int64(profile.AgentVersion))
+	}
+	agent, err := p.client.Beta.Agents.Get(ctx, profile.AgentID, params)
 	if err != nil {
 		return sdkError("GET agent", err)
 	}
-	if string(agent.Type) != "agent" || agent.JSON.ArchivedAt.Valid() {
+	if agent == nil || agent.ID != profile.AgentID || string(agent.Type) != "agent" || agent.JSON.ArchivedAt.Valid() || (profile.AgentVersion > 0 && int(agent.Version) != profile.AgentVersion) {
 		return fmt.Errorf("configured agent must be an available agent")
 	}
 	var agentMeta struct {
 		Runtime string `json:"runtime"`
+		Model   struct {
+			ID     string `json:"id"`
+			Effort struct {
+				Type string `json:"type"`
+			} `json:"effort"`
+		} `json:"model"`
 	}
-	if err := json.Unmarshal([]byte(agent.RawJSON()), &agentMeta); err != nil || agentMeta.Runtime != "claudecode" {
-		return fmt.Errorf("configured agent must use claudecode runtime")
+	if err := json.Unmarshal([]byte(agent.RawJSON()), &agentMeta); err != nil || agentMeta.Runtime != profile.Runtime {
+		return fmt.Errorf("configured agent runtime does not match profile")
+	}
+	if profile.DefaultModel.ID != "" && (agentMeta.Model.ID != profile.DefaultModel.ID || (profile.DefaultModel.Effort != "" && agentMeta.Model.Effort.Type != profile.DefaultModel.Effort)) {
+		return fmt.Errorf("configured agent model does not match profile")
+	}
+	for _, model := range profile.AllowedModels {
+		if model.ID == "" || (model.Effort != "" && !supportedEffort(model.Effort)) {
+			return fmt.Errorf("invalid model allowlist for fixed Agent version")
+		}
 	}
 	// AgentAPI deployments currently expose environment details through the
 	// cursor list endpoint, while the generated SDK's item endpoint may return
@@ -72,7 +109,7 @@ func (p *HTTP) Validate(ctx context.Context) error {
 	var env *anthropic.BetaEnvironment
 	for page := environments; page != nil; {
 		for i := range page.Data {
-			if page.Data[i].ID == p.environment {
+			if page.Data[i].ID == profile.EnvironmentID {
 				env = &page.Data[i]
 				break
 			}
@@ -88,8 +125,20 @@ func (p *HTTP) Validate(ctx context.Context) error {
 	if env == nil || env.Config.Type != "cloud" || env.JSON.ArchivedAt.Valid() {
 		return fmt.Errorf("configured environment must be an available cloud environment")
 	}
+	for _, vaultID := range profile.VaultIDs {
+		vault, err := p.client.Beta.Vaults.Get(ctx, vaultID, anthropic.BetaVaultGetParams{})
+		if err != nil {
+			return sdkError("GET vault", err)
+		}
+		if vault == nil || string(vault.Type) != "vault" || vault.JSON.ArchivedAt.Valid() || vault.ID != vaultID {
+			return fmt.Errorf("configured Vault %q is unavailable", vaultID)
+		}
+	}
+	p.defaultModel = Model{ID: agentMeta.Model.ID, Effort: agentMeta.Model.Effort.Type}
 	return nil
 }
+
+func (p *HTTP) EffectiveModel() Model { return p.defaultModel }
 
 func (p *HTTP) Create(ctx context.Context, input ...NewSession) (Session, error) {
 	params := anthropic.BetaSessionNewParams{
@@ -100,11 +149,21 @@ func (p *HTTP) Create(ctx context.Context, input ...NewSession) (Session, error)
 	if len(input) > 0 {
 		params.Title = param.NewOpt(input[0].Title)
 		params.Metadata = input[0].Metadata
+		if input[0].Model.ID != "" {
+			params.Agent = anthropic.BetaSessionNewParamsAgentUnion{OfBetaManagedAgentsAgentWithOverridess: &anthropic.BetaManagedAgentsAgentWithOverridesParams{
+				ID: p.agent, Type: anthropic.BetaManagedAgentsAgentWithOverridesParamsTypeAgentWithOverrides,
+				Version: param.NewOpt(int64(p.version)),
+				Model:   anthropic.BetaManagedAgentsModelConfigParams{ID: anthropic.BetaManagedAgentsModel(input[0].Model.ID), Effort: anthropic.BetaManagedAgentsModelConfigParamsEffortUnion{OfBetaManagedAgentsModelConfigsEffortBetaManagedAgentsEffortLevel: param.NewOpt(input[0].Model.Effort)}},
+			}}
+		}
 	}
-	if p.version > 0 {
+	if p.version > 0 && (len(input) == 0 || input[0].Model.ID == "") {
 		params.Agent = anthropic.BetaSessionNewParamsAgentUnion{OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
 			ID: p.agent, Type: anthropic.BetaManagedAgentsAgentParamsTypeAgent, Version: param.NewOpt(int64(p.version)),
 		}}
+	}
+	if override := params.Agent.OfBetaManagedAgentsAgentWithOverridess; override != nil && len(input) > 0 && input[0].Model.Effort == "" {
+		override.Model.Effort = anthropic.BetaManagedAgentsModelConfigParamsEffortUnion{}
 	}
 	res, err := p.client.Beta.Sessions.New(ctx, params)
 	if err != nil {
@@ -174,14 +233,26 @@ func decodeSession(raw string) (Session, error) {
 		Session
 		Metadata map[string]string `json:"metadata"`
 		Agent    struct {
-			Runtime string `json:"runtime"`
+			ID      string          `json:"id"`
+			Version int             `json:"version"`
+			Runtime string          `json:"runtime"`
+			Model   json.RawMessage `json:"model"`
 		} `json:"agent"`
 	}
 	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
 		return Session{}, fmt.Errorf("invalid session response")
 	}
 	wire.Session.Runtime = wire.Agent.Runtime
+	wire.Session.AgentID = wire.Agent.ID
+	wire.Session.AgentVersion = wire.Agent.Version
+	wire.Session.Model = decodeModel(wire.Agent.Model)
 	wire.Session.Metadata = wire.Metadata
+	var envelope struct {
+		EnvironmentID string `json:"environment_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &envelope); err == nil {
+		wire.Session.EnvironmentID = envelope.EnvironmentID
+	}
 	return wire.Session, nil
 }
 
@@ -215,20 +286,39 @@ func (p *HTTP) ListSessions(ctx context.Context, q SessionQuery) (SessionPage, e
 	if q.CreatedBefore != "" {
 		opts = append(opts, option.WithQuery("created_at[lte]", q.CreatedBefore))
 	}
-	res, err := p.client.Beta.Sessions.List(ctx, params, opts...)
-	if err != nil {
-		return SessionPage{}, sdkError("GET sessions", err)
-	}
-	out := SessionPage{Data: []Session{}, NextPage: res.NextPage}
-	for _, item := range res.Data {
-		s, err := decodeSession(item.RawJSON())
-		if err != nil {
-			return SessionPage{}, err
+	out := SessionPage{Data: []Session{}}
+	for scanned := 0; scanned < 256; scanned++ {
+		remaining := q.Limit - len(out.Data)
+		if remaining <= 0 {
+			remaining = 20
 		}
-		out.Data = append(out.Data, s)
+		params.Limit = param.NewOpt(int64(remaining))
+		res, err := p.client.Beta.Sessions.List(ctx, params, opts...)
+		if err != nil {
+			return SessionPage{}, sdkError("GET sessions", err)
+		}
+		for _, item := range res.Data {
+			s, err := decodeSession(item.RawJSON())
+			if err != nil {
+				return SessionPage{}, err
+			}
+			if p.version > 0 && (s.AgentVersion != p.version || (s.EnvironmentID != "" && s.EnvironmentID != p.environment)) {
+				continue
+			}
+			out.Data = append(out.Data, s)
+		}
+		out.NextPage = res.NextPage
+		if p.version == 0 || res.NextPage == "" || len(out.Data) >= q.Limit {
+			return out, nil
+		}
+		if params.Page.Valid() && params.Page.Value == res.NextPage {
+			return SessionPage{}, fmt.Errorf("upstream repeated session cursor")
+		}
+		params.Page = param.NewOpt(res.NextPage)
 	}
-	return out, nil
+	return SessionPage{}, fmt.Errorf("session version scan exceeds 256 pages")
 }
+
 func (p *HTTP) ListEvents(ctx context.Context, id string, q EventQuery) (EventPage, error) {
 	params := anthropic.BetaSessionEventListParams{Limit: param.NewOpt(int64(q.Limit)), Order: anthropic.BetaSessionEventListParamsOrder(q.Order), Types: q.Types}
 	if q.Page != "" {
@@ -408,4 +498,31 @@ func DecodeSSE(r io.Reader, emit func(events.Frame) error) error {
 		return err
 	}
 	return io.EOF
+}
+
+func decodeModel(raw json.RawMessage) Model {
+	var wire struct {
+		ID     string          `json:"id"`
+		Effort json.RawMessage `json:"effort"`
+	}
+	if json.Unmarshal(raw, &wire) != nil {
+		return Model{}
+	}
+	var effort string
+	if json.Unmarshal(wire.Effort, &effort) != nil {
+		var object struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(wire.Effort, &object)
+		effort = object.Type
+	}
+	return Model{ID: wire.ID, Effort: effort}
+}
+
+func supportedEffort(e string) bool {
+	switch e {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	return false
 }

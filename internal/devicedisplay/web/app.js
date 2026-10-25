@@ -141,6 +141,11 @@ function toolTarget(event) {
   return short(input.command || input.file_path || input.path || input.description || input.query || input.url || '', 110);
 }
 
+function runtimeLabel(task) {
+  const runtime = ({claudecode: 'Claude Code', codex: 'Codex', native: 'Native'})[task?.runtime] || task?.runtime || 'Agent runtime';
+  return [runtime, task?.model?.id, task?.model?.effort].filter(Boolean).join(' · ');
+}
+
 function taskTitle(task) {
   return short(task?.title, 72) || `Session ${String(task?.task_ref || '').slice(-8)}`;
 }
@@ -280,7 +285,7 @@ function applySelectedTask() {
   const title = task ? taskTitle(task) : state.taskRef ? `Session ${state.taskRef.slice(-8)}` : 'Choose a session';
   $('stage-title').textContent = title;
   $('session-id').textContent = task?.session_id ? task.session_id.slice(0, 18) : state.taskRef ? state.taskRef.slice(-18) : 'waiting';
-  $('runtime').textContent = task?.runtime === 'claudecode' ? 'Claude Code' : (task?.runtime || 'Agent runtime');
+  $('runtime').textContent = runtimeLabel(task);
   if (task) setStatus(task.status);
   renderSessionList();
 }
@@ -314,7 +319,7 @@ function renderSessionList() {
     button.type = 'button';
     button.className = `session-item ${task.task_ref === state.taskRef ? 'selected' : ''}`;
     const statusClass = taskStatusClass(task.status);
-    button.innerHTML = `<div class="session-item-head"><strong class="session-item-title">${esc(taskTitle(task))}</strong><span class="session-item-status ${statusClass}"><i></i>${esc(taskStatus(task.status))}</span></div><span class="session-item-summary">${esc(task.runtime || 'Agent session')} · ${esc(ageOf(task.updated_at))}</span><div class="session-item-meta"><code>${esc(task.task_ref)}</code><time>${esc(timeOf(task.created_at))}</time></div>`;
+    button.innerHTML = `<div class="session-item-head"><strong class="session-item-title">${esc(taskTitle(task))}</strong><span class="session-item-status ${statusClass}"><i></i>${esc(taskStatus(task.status))}</span></div><span class="session-item-summary">${esc(runtimeLabel(task))} · ${esc(ageOf(task.updated_at))}</span><div class="session-item-meta"><code>${esc(task.task_ref)}</code><time>${esc(timeOf(task.created_at))}</time></div>`;
     button.addEventListener('click', () => selectTask(task.task_ref));
     list.appendChild(button);
   }
@@ -333,7 +338,7 @@ async function refreshSessions() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const page = await response.json();
     state.sessions = new Map((page.data || []).map((task) => [task.task_ref, task]));
-    $('session-sync').textContent = `updated ${timeOf(page.queried_at)}`;
+    $('session-sync').textContent = `${page.partial ? "Some runtimes unavailable · " : ""}updated ${timeOf(page.queried_at)}`;
     if (state.taskRef && state.sessions.has(state.taskRef)) {
       state.selectedTask = state.sessions.get(state.taskRef);
     } else if (!state.taskRef && page.data?.length) {
@@ -526,12 +531,12 @@ function applySnapshot(snapshot) {
 
 function applyMeta(meta) {
   state.total = Number(meta.eventCount || 0);
-  $('runtime').textContent = meta.runtime === 'claudecode' ? 'Claude Code' : (meta.runtime || 'Agent runtime');
+  $('runtime').textContent = runtimeLabel(meta);
   $('source').textContent = meta.source || 'AgentAPI session events';
   if (meta.sessionId) $('session-id').textContent = meta.sessionId.slice(0, 18);
   if (meta.startedAt) $('time-range').textContent = `${timeOf(meta.startedAt)} — ${timeOf(meta.endedAt)}`;
   if (meta.taskRef === state.taskRef && meta.title) {
-    state.selectedTask = { ...state.selectedTask, task_ref: meta.taskRef, title: meta.title, session_id: meta.sessionId, runtime: meta.runtime, status: state.status };
+    state.selectedTask = { ...state.selectedTask, task_ref: meta.taskRef, title: meta.title, session_id: meta.sessionId, runtime: meta.runtime, model: meta.model, status: state.status };
     applySelectedTask();
   }
 }

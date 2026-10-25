@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/events"
+	"github.com/wwcchh0123/hackathonGO-2026/internal/runtimeprofile"
 )
 
 type mockSession struct {
@@ -30,10 +31,15 @@ type Mock struct {
 	Step       time.Duration
 	sequenceMu sync.Mutex
 	sequences  map[string]int64
+	profile    runtimeprofile.Profile
 }
 
 func NewMock(ctx context.Context) *Mock {
-	return &Mock{sessions: map[string]*mockSession{}, hub: events.NewHub(), ctx: ctx, Step: 900 * time.Millisecond, sequences: map[string]int64{}}
+	return NewMockForProfile(ctx, runtimeprofile.MockRegistry().Profiles[0])
+}
+
+func NewMockForProfile(ctx context.Context, profile runtimeprofile.Profile) *Mock {
+	return &Mock{sessions: map[string]*mockSession{}, hub: events.NewHub(), ctx: ctx, Step: 900 * time.Millisecond, sequences: map[string]int64{}, profile: profile}
 }
 func ID() string {
 	b := make([]byte, 16)
@@ -67,10 +73,13 @@ func (m *Mock) Create(ctx context.Context, input ...NewSession) (Session, error)
 		m.mu.Unlock()
 		return Session{}, fmt.Errorf("mock session limit reached")
 	}
-	info := Session{ID: id, Status: "idle", Runtime: "claudecode", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	info := Session{ID: id, Status: "idle", Runtime: m.profile.Runtime, AgentID: m.profile.AgentID, AgentVersion: m.profile.AgentVersion, EnvironmentID: m.profile.EnvironmentID, Model: Model{ID: m.profile.DefaultModel.ID, Effort: m.profile.DefaultModel.Effort}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if len(input) > 0 {
 		info.Title = input[0].Title
 		info.Metadata = input[0].Metadata
+		if input[0].Model.ID != "" {
+			info.Model = input[0].Model
+		}
 	}
 	m.sessions[id] = &mockSession{status: "idle", info: info}
 	m.mu.Unlock()

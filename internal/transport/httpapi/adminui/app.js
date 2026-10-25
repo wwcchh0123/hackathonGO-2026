@@ -8,7 +8,7 @@ let dashboard = null;
 async function request(path, options = {}) {
   const response = await fetch(path, { cache: 'no-store', ...options });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
   return data;
 }
 function showError(error) { $('error').hidden = !error; $('error').textContent = error || ''; }
@@ -51,7 +51,7 @@ function deviceButton(device) {
 }
 function taskButton(task) {
   const title = document.createElement('strong'); title.textContent = task.title || '未命名任务';
-  const status = document.createElement('span'); status.textContent = `${task.device_id} · ${statusLabel(task.status)}`; status.className = task.attention?.length ? 'attention' : 'online';
+  const status = document.createElement('span'); status.textContent = `${task.device_id} · ${task.runtime || ""} ${task.model?.id || ""} · ${statusLabel(task.status)}`; status.className = task.attention?.length ? 'attention' : 'online';
   const meta = document.createElement('small'); meta.textContent = `${task.attention?.join(' · ') || '无错误'} · 更新于 ${fmt(task.updated_at)}`;
   return makeButton(`row ${selectedTask?.ref === task.task_ref && selectedTask?.device_id === task.device_id ? 'selected' : ''}`, [title, status, meta], () => loadTask(task.device_id, task.task_ref));
 }
@@ -94,7 +94,7 @@ async function loadTask(deviceId, ref) {
     const result = await request(`/api/admin/tasks/${encodeURIComponent(deviceId)}/${encodeURIComponent(ref)}?events_limit=30`);
     if (selectedTask?.ref !== ref || selectedTask?.device_id !== deviceId) return;
     const task = result.task; detail.replaceChildren();
-    appendText(detail, 'h2', task.title || '未命名任务'); appendText(detail, 'p', `设备 ${deviceId} · ${statusLabel(task.status)} · ${task.session_id || '尚未创建云端会话'} · 停止原因：${task.stop_reason || '未知'}`, 'detail-meta');
+    appendText(detail, 'h2', task.title || '未命名任务'); appendText(detail, 'p', `设备 ${deviceId} · ${statusLabel(task.status)} · ${task.runtime || ''} ${task.model?.id || ''} ${task.model?.effort || ''} · 停止原因：${task.stop_reason || '未知'}`, 'detail-meta');
     if (task.command) appendText(detail, 'p', `命令 ${task.command.command_id} · ${task.command.state}/${task.command.phase}${task.command.error ? ` · ${task.command.error}` : ''}`, 'command');
     const summary = document.createElement('pre'); summary.textContent = task.summary?.text || '暂无摘要'; detail.append(summary); appendText(detail, 'h3', `原始事件 · ${(task.events || []).length} 条`);
     for (const raw of task.events || []) { const event = document.createElement('pre'); try { event.textContent = JSON.stringify(typeof raw === 'string' ? JSON.parse(raw) : raw, null, 2); } catch { event.textContent = String(raw); } detail.append(event); }

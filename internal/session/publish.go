@@ -22,6 +22,16 @@ func (c *Controller) Preview(ctx context.Context, ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	c.mu.Lock()
+	binding, ok := c.bindingForTaskLocked(c.tasks[ref])
+	c.mu.Unlock()
+	if !ok || binding.Provider == nil {
+		return "", business("runtime_unavailable", "", "", "re-list tasks")
+	}
+	if !binding.Profile.Capabilities.Preview || !binding.Profile.Capabilities.Files {
+		return "", business("runtime_not_capable", binding.Profile.Runtime, "preview", "inspect the task messages instead")
+	}
+	provider := binding.Provider
 	if s.Status != "idle" {
 		return "", errors.New("运行中任务的产物可能变化，请空闲后预览")
 	}
@@ -44,7 +54,7 @@ func (c *Controller) Preview(ctx context.Context, ref string) (string, error) {
 	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, c.options.PublishTimeout)
 	defer cancel()
-	files, err := c.Provider.Artifacts(ctx, s.ID)
+	files, err := provider.Artifacts(ctx, s.ID)
 	if err != nil {
 		return "", err
 	}
@@ -61,7 +71,7 @@ func (c *Controller) Preview(ctx context.Context, ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	current, err := c.status(ctx, s.ID)
+	current, err := c.statusWith(ctx, provider, s.ID)
 	c.mu.Lock()
 	valid := err == nil && current.Status == "idle" && t.generation == generation && ctx.Err() == nil
 	if valid {

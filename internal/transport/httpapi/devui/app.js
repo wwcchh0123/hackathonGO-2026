@@ -47,7 +47,7 @@ async function loadTasks(more = false) {
   for (const id of ['view-task', 'command-task']) {
     const select = $(id), selected = id === 'view-task' ? (snapshot?.task_ref || select.value) : select.value;
     select.replaceChildren(new Option('请选择任务', ''));
-    for (const task of tasks.values()) select.add(new Option(`${task.title || '未命名任务'} · ${task.status}`, task.task_ref));
+    for (const task of tasks.values()) select.add(new Option(`${task.title || '未命名任务'} · ${task.runtime || ''} ${task.model?.id || ''} · ${task.status}`, task.task_ref));
     select.value = selected;
   }
   nextPage = page.next_page || '';
@@ -72,7 +72,7 @@ async function request(path, body) {
         },
   );
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
   return data;
 }
 function renderEvents() {

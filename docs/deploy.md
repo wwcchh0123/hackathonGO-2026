@@ -30,7 +30,7 @@ make run
 
 ## 真实 AgentAPI
 
-准备一个预配置的 `claudecode` agent、cloud environment，以及可用的 AgentAPI Key。控制服务不会创建 agent/environment 或覆盖模型。把密钥留在运行主机：
+准备固定版本的 Agent、cloud environment 和 AgentAPI Key。兼容配置只启用 claudecode；多 runtime 使用下文结构化 profiles。控制服务不创建 Agent/environment，仅按 allowlist 在新 Session 创建时覆盖 model/effort。把密钥留在运行主机：
 
 ```sh
 cp .env.example .env
@@ -41,7 +41,7 @@ set +a
 make build run
 ```
 
-启动命令不会自动读取 `.env`。真实模式要求 `PUBLIC_URL` 可由灵矽访问，不能使用 localhost/回环地址。构建时无需有效云端密钥，真实模式启动时会只读检查 agent/environment。
+启动命令不会自动读取 `.env`。真实模式要求 `PUBLIC_URL` 可由灵矽访问，不能使用 localhost/回环地址。构建时无需有效云端密钥，真实模式启动时对所有 profile 只读检查精确 Agent/version/runtime/default model、environment 和 Vault 可用性；任何失败都不监听 HTTP。
 
 | 环境变量 | 用途 |
 | --- | --- |
@@ -58,6 +58,45 @@ make build run
 | `DATA_DIR` | 本地静态预览缓存，默认 `.data/results` |
 
 如先用浏览器验证真实编程，可以临时设 `DEV_TOOLS=true`，用受令牌保护的控制台提交需求；这一步不等于真实语音验证。Agent 应将静态网页导出至 `/mnt/session/outputs/`，需要框架时先在沙箱完成构建。
+
+## Runtime profiles
+
+设置 `AGENTAPI_RUNTIME_PROFILES_JSON` 为以下 JSON 对象（也接受 profiles 数组），并移除旧的 `AGENTAPI_AGENT_ID/AGENTAPI_AGENT_VERSION/AGENTAPI_ENVIRONMENT_ID/AGENTAPI_VAULT_IDS`。两套配置并存拒绝启动。最多 16 个 profile，每个 runtime 同时只允许一个 create_enabled profile；版本轮换时给旧版本独立 key、关闭 create_enabled，保留 read_enabled。`AGENTAPI_DEFAULT_RUNTIME` 可覆盖 JSON 的默认值，必须指向可创建 profile。
+
+```json
+{
+  "default_runtime": "codex",
+  "profiles": [{
+    "key": "codex-v1",
+    "runtime": "codex",
+    "agent_id": "agt_<configured>",
+    "agent_version": 1,
+    "environment_id": "env_<configured>",
+    "vault_ids": [],
+    "default_model": {"id": "<exact-agent-model>", "effort": "high"},
+    "allowed_models": [{"id": "<exact-agent-model>", "effort": "high"}],
+    "capabilities": {"continue": true, "interrupt": true, "events": true, "files": true, "preview": true},
+    "create_enabled": true,
+    "read_enabled": true
+  }]
+}
+```
+
+同样可配置 `claudecode/native`。模型 ID 使用部署真实值，effort 是允许的 low/medium/high/xhigh/max 之一。每个默认 `(id,effort)` 必须在 allowlist；省略 model 使用默认值，显式 model 不改变 Agent 的 system/tools/MCP/skills/Vault。环境与 Vault 默认隔离；跨 runtime 共用必须由双方显式设置 `shared_resources:true`，并各自通过上游归属/可用性校验。Mock 无需密钥，内置三个独立 runtime fixture。
+
+当前 API Key 接口没有可验证任意模型/能力的权威目录。默认模型与精确 Agent version 比较，allowlist 与 capabilities 是部署者明确的策略声明；配置其他模型组合前必须运行真实预检，创建响应仍会核对实际 model/effort。控制服务不会为了启动校验创建收费 Session，也不静默切换模型或退回 Mock。此边界不同于宣称所有 provider 都支持某个模型。
+
+可选真实验收（会创建云端 Session 并消耗额度，普通测试始终不需要密钥）：
+
+```sh
+# 已在环境中提供 Key、base URL 和三个 profile 的 JSON；不要提交这些真实配置。
+AGENTAPI_LIVE_TEST=1 go test -count=1 -timeout=20m \
+  -run '^TestLiveRuntimeProfiles$' -v ./internal/transport/httpapi
+```
+
+场景包括三类 runtime 的网页生成、同 Session 修改、运行中 interrupt 后续聊、Files/隔离预览和 Native → Codex 接力；可用 `AGENTAPI_LIVE_EVIDENCE=<本地绝对路径>` 保存脱敏 Session/event/file 元信息。这覆盖控制 MCP 的灵矽参数映射，不替代真实麦克风 ASR/TTS 或物理 AirPlay 验证。
+
+回滚仅关闭非 claudecode profile 的创建能力并选回 claudecode 默认项，保留旧 profile 的读取和历史查询；不迁移/删除 Session，不将旧 task_ref 重指向新任务。进程重启后重新列出获取新引用。
 
 ## 本地语音与两个 MCP
 

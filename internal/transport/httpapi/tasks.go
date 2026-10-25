@@ -30,7 +30,11 @@ func taskFailure(w http.ResponseWriter, err error) {
 	} else if agentapi.Retryable(err) {
 		status = 502
 	}
-	failure(w, status, err.Error())
+	failureError(w, status, err)
+}
+
+func failureError(w http.ResponseWriter, status int, err error) {
+	JSON(w, status, session.ErrorResponse(err))
 }
 func taskAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler, c *session.Controller) {
 	mux.Handle("GET /api/tasks", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +56,7 @@ func taskAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler, c *ses
 				return
 			}
 		}
-		page, err := c.ListTasks(r.Context(), session.ListOptions{Limit: n, Page: q.Get("page"), Status: q.Get("status"), IncludeArchived: archived, CreatedAfter: q.Get("created_after"), CreatedBefore: q.Get("created_before")})
+		page, err := c.ListTasks(r.Context(), session.ListOptions{Limit: n, Page: q.Get("page"), Status: q.Get("status"), Runtime: q.Get("runtime"), Model: agentapi.Model{ID: q.Get("model"), Effort: q.Get("effort")}, IncludeArchived: archived, CreatedAfter: q.Get("created_after"), CreatedBefore: q.Get("created_before")})
 		if err != nil {
 			taskFailure(w, err)
 			return

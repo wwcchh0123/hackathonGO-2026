@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/wwcchh0123/hackathonGO-2026/internal/runtimeprofile"
 )
 
 type Config struct {
@@ -14,6 +16,8 @@ type Config struct {
 	AgentVersion                                                                                int
 	DevTools                                                                                    bool
 	VaultIDs                                                                                    []string
+	Profiles                                                                                    runtimeprofile.Registry
+	DefaultRuntime                                                                              string
 }
 
 func env(k, d string) string {
@@ -43,8 +47,41 @@ func Load() (Config, error) {
 	if c.Mode != "mock" && c.Mode != "http" {
 		return c, fmt.Errorf("AGENTAPI_MODE must be mock or http")
 	}
-	if c.Mode == "http" && (c.AgentURL == "" || c.AgentKey == "" || c.AgentID == "" || c.EnvironmentID == "" || c.Token == "") {
-		return c, fmt.Errorf("http mode requires AGENTAPI_BASE_URL, AGENTAPI_API_KEY, AGENTAPI_AGENT_ID, AGENTAPI_ENVIRONMENT_ID and CONTROL_TOKEN")
+	profilesJSON := strings.TrimSpace(os.Getenv("AGENTAPI_RUNTIME_PROFILES_JSON"))
+	if raw, present := os.LookupEnv("AGENTAPI_RUNTIME_PROFILES_JSON"); present && strings.TrimSpace(raw) == "" && raw != "" {
+		return c, fmt.Errorf("AGENTAPI_RUNTIME_PROFILES_JSON is empty")
+	}
+	legacyConfigured := c.AgentID != "" || c.EnvironmentID != "" || os.Getenv("AGENTAPI_AGENT_VERSION") != ""
+	if profilesJSON != "" {
+		if legacyConfigured || len(c.VaultIDs) > 0 {
+			return c, fmt.Errorf("AGENTAPI_RUNTIME_PROFILES_JSON cannot be combined with legacy AgentAPI profile variables")
+		}
+		registry, err := runtimeprofile.Parse(profilesJSON)
+		if err != nil {
+			return c, err
+		}
+		c.Profiles = registry
+	} else if c.Mode == "mock" && !legacyConfigured {
+		c.Profiles = runtimeprofile.MockRegistry()
+	} else {
+		if c.AgentID == "" || c.EnvironmentID == "" {
+			if c.Mode == "http" {
+				return c, fmt.Errorf("http mode requires AGENTAPI_BASE_URL, AGENTAPI_API_KEY, AGENTAPI_AGENT_ID, AGENTAPI_ENVIRONMENT_ID and CONTROL_TOKEN")
+			}
+			return c, fmt.Errorf("legacy AgentAPI profile requires AGENTAPI_AGENT_ID and AGENTAPI_ENVIRONMENT_ID")
+		}
+		c.Profiles = runtimeprofile.Legacy(c.AgentID, c.AgentVersion, c.EnvironmentID, c.VaultIDs)
+	}
+	c.DefaultRuntime = strings.TrimSpace(env("AGENTAPI_DEFAULT_RUNTIME", c.Profiles.DefaultRuntime))
+	if c.DefaultRuntime == "" {
+		c.DefaultRuntime = "claudecode"
+	}
+	c.Profiles.DefaultRuntime = c.DefaultRuntime
+	if err := c.Profiles.Validate(); err != nil {
+		return c, err
+	}
+	if c.Mode == "http" && (c.AgentURL == "" || c.AgentKey == "" || c.Token == "") {
+		return c, fmt.Errorf("http mode requires AGENTAPI_BASE_URL, AGENTAPI_API_KEY and CONTROL_TOKEN")
 	}
 	if c.AgentVersion <= 0 {
 		return c, fmt.Errorf("AGENTAPI_AGENT_VERSION must be a positive integer")

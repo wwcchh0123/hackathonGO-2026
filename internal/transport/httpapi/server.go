@@ -161,7 +161,7 @@ func handler(cfg config.Config, c *session.Controller, manager *controlplane.Man
 			}
 			receipt, err := c.Submit(cmd)
 			if err != nil {
-				failure(w, 400, err.Error())
+				failureError(w, 400, err)
 				return
 			}
 			JSON(w, 202, receipt)
@@ -324,6 +324,7 @@ func displayEvents(c *session.Controller) http.Handler {
 			"taskRef":   ref,
 			"sessionId": snapshot.SessionID,
 			"runtime":   d.Runtime,
+			"model":     d.Model,
 			"title":     d.Title,
 			"source":    "AgentAPI session event stream",
 		}); err != nil {
@@ -394,31 +395,36 @@ func displaySessions(c *session.Controller) http.Handler {
 				Title:     task.Title,
 				Status:    task.Status,
 				Runtime:   task.Runtime,
+				Model:     task.Model,
 				CreatedAt: task.CreatedAt,
 				UpdatedAt: task.UpdatedAt,
 				Archived:  task.Archived,
 			})
 		}
-		JSON(w, http.StatusOK, displaySessionPage{Data: items, HasMore: page.HasMore, NextPage: page.NextPage, QueriedAt: page.QueriedAt})
+		JSON(w, http.StatusOK, displaySessionPage{Data: items, HasMore: page.HasMore, NextPage: page.NextPage, QueriedAt: page.QueriedAt, Partial: page.Partial, Complete: page.Complete, Errors: page.Errors})
 	})
 }
 
 type displaySession struct {
-	TaskRef   string    `json:"task_ref"`
-	SessionID string    `json:"session_id,omitempty"`
-	Title     string    `json:"title"`
-	Status    string    `json:"status"`
-	Runtime   string    `json:"runtime,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Archived  bool      `json:"archived,omitempty"`
+	TaskRef   string         `json:"task_ref"`
+	SessionID string         `json:"session_id,omitempty"`
+	Title     string         `json:"title"`
+	Status    string         `json:"status"`
+	Runtime   string         `json:"runtime,omitempty"`
+	Model     agentapi.Model `json:"model"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Archived  bool           `json:"archived,omitempty"`
 }
 
 type displaySessionPage struct {
-	Data      []displaySession `json:"data"`
-	NextPage  string           `json:"next_page,omitempty"`
-	HasMore   bool             `json:"has_more"`
-	QueriedAt time.Time        `json:"queried_at"`
+	Data      []displaySession    `json:"data"`
+	Partial   bool                `json:"partial"`
+	Complete  bool                `json:"complete"`
+	Errors    []session.TaskError `json:"errors,omitempty"`
+	NextPage  string              `json:"next_page,omitempty"`
+	HasMore   bool                `json:"has_more"`
+	QueriedAt time.Time           `json:"queried_at"`
 }
 
 func displaySnapshot(d session.Detail) device.Snapshot {

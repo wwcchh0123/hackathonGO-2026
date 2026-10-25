@@ -14,8 +14,8 @@ import (
 )
 
 func parseMessage(f events.Frame) Message { return progress.ReadMessage(f) }
-func (c *Controller) summary(ctx context.Context, id string) (*Message, bool) {
-	page, err := c.Provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: 8, Order: "desc", Types: []string{"agent.message"}})
+func (c *Controller) summary(ctx context.Context, provider agentapi.Provider, id string) (*Message, bool) {
+	page, err := provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: 8, Order: "desc", Types: []string{"agent.message"}})
 	if err != nil {
 		return nil, true
 	}
@@ -29,7 +29,7 @@ func (c *Controller) summary(ctx context.Context, id string) (*Message, bool) {
 	return nil, page.NextPage != ""
 }
 func taskCard(s agentapi.Session, ref string) Task {
-	t := Task{Ref: ref, SessionID: s.ID, Title: s.Title, Status: s.Status, Runtime: s.Runtime, Archived: s.ArchivedAt != nil, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, CanContinue: true}
+	t := Task{Ref: ref, SessionID: s.ID, Title: s.Title, Status: s.Status, Runtime: s.Runtime, Model: s.Model, Archived: s.ArchivedAt != nil, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, CanContinue: true}
 	if err := compatible(s); err != nil {
 		t.CanContinue = false
 		t.ContinueReason = err.Error()
@@ -111,7 +111,7 @@ func validateList(o *ListOptions) error {
 			}
 		}
 	}
-	if len(o.Page) > 512 || len(o.AgentID) > 200 {
+	if len(o.Page) > 32768 || len(o.AgentID) > 200 || len(o.Runtime) > 64 || len(o.Model.ID) > 256 || len(o.Model.Effort) > 16 {
 		return errors.New("查询参数过长")
 	}
 	return nil
@@ -120,6 +120,9 @@ func (c *Controller) ListTasks(ctx context.Context, o ListOptions) (TaskPage, er
 	if err := validateList(&o); err != nil {
 		return TaskPage{}, err
 	}
+	if len(c.options.Profiles) > 0 || o.Runtime != "" || o.Model.ID != "" {
+		return c.listProfileTasks(ctx, o)
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
 	defer cancel()
 	now := time.Now().UTC()
@@ -127,7 +130,7 @@ func (c *Controller) ListTasks(ctx context.Context, o ListOptions) (TaskPage, er
 	if err != nil {
 		return TaskPage{}, err
 	}
-	out := TaskPage{Data: make([]Task, len(page.Data)), NextPage: page.NextPage, HasMore: page.NextPage != "", Sort: "created_at_desc", Scope: "current_agentapi_identity", QueriedAt: now, Filters: o}
+	out := TaskPage{Data: make([]Task, len(page.Data)), NextPage: page.NextPage, HasMore: page.NextPage != "", Complete: page.NextPage == "", Sort: "created_at_desc", Scope: "current_agentapi_identity", QueriedAt: now, Filters: o}
 	for i, s := range page.Data {
 		c.mu.Lock()
 		ref, err := c.referenceLocked(s)
@@ -151,7 +154,14 @@ func (c *Controller) ListTasks(ctx context.Context, o ListOptions) (TaskPage, er
 					out.Data[i].SummaryUnavailable = true
 					return
 				}
-				out.Data[i].Summary, out.Data[i].SummaryUnavailable = c.summary(ctx, out.Data[i].SessionID)
+				c.mu.Lock()
+				binding, ok := c.bindingForTaskLocked(c.tasks[out.Data[i].Ref])
+				c.mu.Unlock()
+				if !ok {
+					out.Data[i].SummaryUnavailable = true
+					return
+				}
+				out.Data[i].Summary, out.Data[i].SummaryUnavailable = c.summary(ctx, binding.Provider, out.Data[i].SessionID)
 			}(i)
 		}
 		wg.Wait()
@@ -183,7 +193,12 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 	}
 	state := t.commands[key]
 	unknown := state != nil && state.State == "unknown"
+	binding, ok := c.bindingForTaskLocked(t)
 	c.mu.Unlock()
+	if !ok || binding.Provider == nil {
+		return Detail{}, business("runtime_unavailable", "", "", "re-list tasks")
+	}
+	provider := binding.Provider
 	if unknown {
 		c.reconcile(ctx, ref, key)
 	}
@@ -191,7 +206,7 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 	defer cancel()
 	c.mu.Lock()
 	id := t.id
-	d := Detail{Task: Task{Ref: ref, SessionID: id, Title: truncate(t.prompt, 100), Status: "creating", CreatedAt: t.created}, QueriedAt: time.Now().UTC(), StopReason: "unknown", Messages: []Message{}, Events: []json.RawMessage{}, Files: agentapi.FilePage{Data: []agentapi.FileInfo{}}, ResultURL: t.resultURL}
+	d := Detail{Task: Task{Ref: ref, SessionID: id, Runtime: binding.Profile.Runtime, Model: t.model, ProfileKey: t.profileKey, ParentRef: t.parent, Title: truncate(t.prompt, 100), Status: "creating", CreatedAt: t.created}, QueriedAt: time.Now().UTC(), StopReason: "unknown", Messages: []Message{}, Events: []json.RawMessage{}, Files: agentapi.FilePage{Data: []agentapi.FileInfo{}}, ResultURL: t.resultURL}
 	if key != "" {
 		if s := t.commands[key]; s != nil {
 			copy := *s
@@ -218,15 +233,38 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 		}
 		return d, nil
 	}
-	s, err := c.status(ctx, id)
+	s, err := c.statusWith(ctx, provider, id)
 	if err != nil {
 		return Detail{}, err
 	}
+	parent, expectedModel := d.ParentRef, d.Model
 	d.Task = taskCard(s, ref)
-	d.Summary, d.SummaryUnavailable = c.summary(ctx, id)
+	d.ProfileKey, d.ParentRef = binding.Profile.Key, parent
+	if d.ParentRef == "" && s.Metadata["parent_session_id"] != "" {
+		d.ParentRef = c.restoreParentRef(ctx, s)
+		if d.ParentRef != "" {
+			c.mu.Lock()
+			t.parent = d.ParentRef
+			c.mu.Unlock()
+		}
+	}
+
+	if !binding.Profile.Capabilities.Continue || validateBinding(s, binding.Profile, expectedModel) != nil {
+		d.CanContinue = false
+		d.ContinueReason = "profile_inconsistent or runtime_not_capable"
+	}
+	if !binding.Profile.Capabilities.Events {
+		d.SummaryUnavailable = true
+		if binding.Profile.Capabilities.Files {
+			d.Files, err = provider.ListFiles(ctx, id, 50, o.FilesPage)
+			d.FilesUnavailable = err != nil
+		}
+		return d, nil
+	}
+	d.Summary, d.SummaryUnavailable = c.summary(ctx, provider, id)
 	// Control-only tail is independent from the historical page requested by the
 	// caller. An older page can never replace the current stop reason.
-	control, err := c.Provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: 64, Order: "desc", Types: []string{"user.message", "agent.message", "session.status_idle", "session.status_running", "session.status_rescheduled", "session.status_terminated"}})
+	control, err := provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: 64, Order: "desc", Types: []string{"user.message", "agent.message", "session.status_idle", "session.status_running", "session.status_rescheduled", "session.status_terminated"}})
 	if err != nil {
 		return Detail{}, err
 	}
@@ -242,7 +280,7 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 	}
 
 	if n > 0 {
-		page, err := c.Provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: n, Page: o.EventsPage, Order: "desc"})
+		page, err := provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: n, Page: o.EventsPage, Order: "desc"})
 		if err != nil {
 			return Detail{}, err
 		}
@@ -252,7 +290,11 @@ func (c *Controller) GetTask(ctx context.Context, ref string, o DetailOptions) (
 		d.EventsNextPage = page.NextPage
 		d.EventsHasMore = page.NextPage != ""
 	}
-	d.Files, err = c.Provider.ListFiles(ctx, id, 50, o.FilesPage)
+	if binding.Profile.Capabilities.Files {
+		d.Files, err = provider.ListFiles(ctx, id, 50, o.FilesPage)
+	} else {
+		d.FilesUnavailable = true
+	}
 	if err != nil {
 		d.Files = agentapi.FilePage{Data: []agentapi.FileInfo{}}
 		d.FilesUnavailable = true
@@ -275,7 +317,12 @@ func (c *Controller) reconcile(ctx context.Context, ref, key string) bool {
 	}
 	snapshot := *entry
 	id := t.id
+	binding, ok := c.bindingForTaskLocked(t)
 	c.mu.Unlock()
+	if !ok || binding.Provider == nil {
+		return false
+	}
+	provider := binding.Provider
 	if snapshot.State != "unknown" {
 		return true
 	}
@@ -284,15 +331,18 @@ func (c *Controller) reconcile(ctx context.Context, ref, key string) bool {
 	if snapshot.Phase == "create" {
 		page := ""
 		for range 3 {
-			list, err := c.Provider.ListSessions(ctx, agentapi.SessionQuery{Limit: 100, Page: page, CreatedAfter: snapshot.AcceptedAt.Add(-time.Minute).UTC().Format(time.RFC3339Nano), IncludeArchived: true})
+			list, err := provider.ListSessions(ctx, agentapi.SessionQuery{Limit: 100, Page: page, CreatedAfter: snapshot.AcceptedAt.Add(-time.Minute).UTC().Format(time.RFC3339Nano), IncludeArchived: true})
 			if err != nil {
 				return false
 			}
 			for _, s := range list.Data {
 				if s.Metadata["client_request_id"] == key && s.Metadata["source"] == "linxi-control" {
+					if binding.Profile.AgentID != "" && (!matchesProfile(s, binding) || s.Metadata["profile_key"] != binding.Profile.Key) {
+						return false
+					}
 					c.mu.Lock()
 					t.id = s.ID
-					c.sessions[s.ID] = ref
+					c.sessions[sessionMapKey(binding.Profile.Key, s.ID)] = ref
 					c.mu.Unlock()
 					c.updateCommand(ref, key, "failed", "created", errors.New("已找回创建的会话；首条需求尚未发送，请明确发送到此任务"), "")
 					return true
@@ -310,7 +360,7 @@ func (c *Controller) reconcile(ctx context.Context, ref, key string) bool {
 	}
 	page := ""
 	for range 4 {
-		list, err := c.Provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: 100, Page: page, Order: "desc", Types: []string{"user.message"}})
+		list, err := provider.ListEvents(ctx, id, agentapi.EventQuery{Limit: 100, Page: page, Order: "desc", Types: []string{"user.message"}})
 		if err != nil {
 			return false
 		}
@@ -337,8 +387,11 @@ func (c *Controller) SessionFor(ctx context.Context, ref string) (agentapi.Sessi
 	c.mu.Lock()
 	t, err := c.recordLocked(ref)
 	id := ""
+	var binding ProfileBinding
+	var ok bool
 	if t != nil {
 		id = t.id
+		binding, ok = c.bindingForTaskLocked(t)
 	}
 	c.mu.Unlock()
 	if err != nil {
@@ -347,7 +400,10 @@ func (c *Controller) SessionFor(ctx context.Context, ref string) (agentapi.Sessi
 	if id == "" {
 		return agentapi.Session{}, fmt.Errorf("云端会话尚未创建")
 	}
-	return c.status(ctx, id)
+	if !ok || binding.Provider == nil {
+		return agentapi.Session{}, business("runtime_unavailable", "", "", "re-list tasks")
+	}
+	return c.statusWith(ctx, binding.Provider, id)
 }
 
 func stopReason(status string, tail []events.Frame) string {
@@ -373,4 +429,26 @@ func stopReason(status string, tail []events.Frame) string {
 		}
 	}
 	return "unknown"
+}
+
+// Parent linkage survives process restarts through Session metadata. Resolve it
+// through a readable profile and verify its ownership before issuing a new ref.
+func (c *Controller) restoreParentRef(ctx context.Context, child agentapi.Session) string {
+	parentID := child.Metadata["parent_session_id"]
+	for _, binding := range c.profileBindings(child.Metadata["parent_runtime"]) {
+		if key := child.Metadata["parent_profile_key"]; key != "" && key != binding.Profile.Key {
+			continue
+		}
+		parent, err := c.statusWith(ctx, binding.Provider, parentID)
+		if err != nil || !matchesProfile(parent, binding) || !c.ownsSession(parent) {
+			continue
+		}
+		c.mu.Lock()
+		ref, err := c.referenceLockedFor(parent, binding)
+		c.mu.Unlock()
+		if err == nil {
+			return ref
+		}
+	}
+	return ""
 }

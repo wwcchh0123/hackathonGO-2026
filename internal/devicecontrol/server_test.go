@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,7 +48,11 @@ type fakeRuntime struct {
 	castURL         string
 	scrollDirection string
 	scrollPages     int
+	clickedID       string
 	stopped         int
+	captureError    error
+	structureError  string
+	emptyCapture    bool
 }
 
 func (f *fakeRuntime) ScanScreens(context.Context) ([]Screen, error) {
@@ -66,6 +71,35 @@ func (f *fakeRuntime) ScrollScreen(_ context.Context, direction string, pages in
 	defer f.mu.Unlock()
 	f.scrollDirection = direction
 	f.scrollPages = pages
+	return nil
+}
+
+func (f *fakeRuntime) CaptureScreen(context.Context) (BrowserCapture, error) {
+	if f.captureError != nil {
+		return BrowserCapture{}, f.captureError
+	}
+	if f.emptyCapture {
+		return BrowserCapture{}, nil
+	}
+	if f.structureError != "" {
+		return BrowserCapture{PNG: []byte("png"), StructureError: f.structureError}, nil
+	}
+	inspection, _ := f.InspectBrowser(context.Background())
+	return BrowserCapture{URL: "https://public.example/display/", Title: "Task", PNG: []byte("png"), Inspection: &inspection}, nil
+}
+
+func (f *fakeRuntime) InspectBrowser(context.Context) (BrowserInspection, error) {
+	return BrowserInspection{
+		URL: "https://public.example/display/", Title: "Task",
+		Elements: []BrowserElement{{ID: "e1", Tag: "div", Text: "展开", FrameURL: "https://public.example/preview/"}},
+		Frames:   []BrowserFrame{{URL: "https://public.example/preview/", HTML: `<div class="card" data-element-id="e1">展开</div>`}},
+	}, nil
+}
+
+func (f *fakeRuntime) ClickBrowser(_ context.Context, elementID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clickedID = elementID
 	return nil
 }
 
@@ -107,7 +141,7 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	defer peer.Close()
 
 	tools, err := peer.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 4 {
+	if err != nil || len(tools.Tools) != 7 {
 		t.Fatalf("device tools: %v %v", tools, err)
 	}
 	if _, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "scan_screens"}); err != nil {
@@ -139,6 +173,46 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	if direction != "down" || pages != 2 {
 		t.Fatalf("scroll request: %q %d", direction, pages)
 	}
+	inspect, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "inspect_browser"})
+	if err != nil || inspect.IsError {
+		t.Fatalf("inspect_browser: %v %v", inspect, err)
+	}
+	capture, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "capture_screen"})
+	if err != nil || capture.IsError || len(capture.Content) != 2 {
+		t.Fatalf("capture_screen: %v %v", capture, err)
+	}
+	if image, ok := capture.Content[1].(*mcp.ImageContent); !ok || string(image.Data) != "png" {
+		t.Fatalf("capture image: %#v", capture.Content[1])
+	}
+	var captured struct {
+		Page *BrowserInspection `json:"page"`
+	}
+	if err := json.Unmarshal([]byte(capture.Content[0].(*mcp.TextContent).Text), &captured); err != nil || captured.Page == nil || len(captured.Page.Elements) != 1 {
+		t.Fatalf("screenshot must include actionable DOM: %+v %v", captured, err)
+	}
+	if captured.Page.Elements[0].Tag != "div" || len(captured.Page.Frames) != 1 || !strings.Contains(captured.Page.Frames[0].HTML, `data-element-id="e1"`) {
+		t.Fatalf("non-button DOM structure lost in MCP response: %+v", captured.Page)
+	}
+	click, err := peer.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "click_browser",
+		Arguments: map[string]any{"element_id": "e1"},
+	})
+	if err != nil || click.IsError {
+		t.Fatalf("click_browser: %v %v", click, err)
+	}
+	runtime.mu.Lock()
+	clicked := runtime.clickedID
+	runtime.mu.Unlock()
+	if clicked != "e1" {
+		t.Fatalf("click element: %q", clicked)
+	}
+	badClick, err := peer.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "click_browser",
+		Arguments: map[string]any{"element_id": "button"},
+	})
+	if err != nil || !badClick.IsError {
+		t.Fatalf("invalid click element: %v %v", badClick, err)
+	}
 	bad, err := peer.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "cast_screen",
 		Arguments: map[string]any{"url": "file:///etc/passwd"},
@@ -154,5 +228,53 @@ func TestDeviceMCPControlsOnlyBrowserAndAirPlay(t *testing.T) {
 	runtime.mu.Unlock()
 	if stopped != 1 {
 		t.Fatalf("stop count: %d", stopped)
+	}
+}
+
+// A failed DOM read must not discard a usable screenshot or pretend that the
+// preview has no controls. Conversely, no image must not be reported as success.
+func TestDeviceMCPCaptureDegradesExplicitly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		runtime *fakeRuntime
+		isError bool
+		message string
+	}{
+		{name: "DOM unavailable", runtime: &fakeRuntime{structureError: "frame disappeared"}, message: "frame disappeared"},
+		{name: "browser unavailable", runtime: &fakeRuntime{captureError: errors.New("browser unavailable")}, isError: true, message: "browser unavailable"},
+		{name: "empty screenshot", runtime: &fakeRuntime{emptyCapture: true}, isError: true, message: "当前没有可用的浏览器画面"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			server := httptest.NewServer(Handler(tc.runtime))
+			defer server.Close()
+			client := mcp.NewClient(&mcp.Implementation{Name: "capture-test", Version: "1"}, nil)
+			peer, err := client.Connect(ctx, &mcp.SSEClientTransport{Endpoint: server.URL + "/mcp"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer peer.Close()
+			result, err := peer.CallTool(ctx, &mcp.CallToolParams{Name: "capture_screen"})
+			if err != nil || result.IsError != tc.isError || len(result.Content) == 0 {
+				t.Fatalf("capture: %+v %v", result, err)
+			}
+			message, ok := result.Content[0].(*mcp.TextContent)
+			if !ok || !strings.Contains(message.Text, tc.message) {
+				t.Fatalf("missing explicit failure: %+v", result.Content[0])
+			}
+			if !tc.isError {
+				var metadata struct {
+					Page           *BrowserInspection `json:"page"`
+					StructureError string             `json:"structure_error"`
+				}
+				if err := json.Unmarshal([]byte(message.Text), &metadata); err != nil || metadata.Page != nil || metadata.StructureError != tc.message || len(result.Content) != 2 {
+					t.Fatalf("invalid degraded response: %+v %v", metadata, err)
+				}
+				if image, ok := result.Content[1].(*mcp.ImageContent); !ok || string(image.Data) != "png" {
+					t.Fatal("usable screenshot was discarded")
+				}
+			}
+		})
 	}
 }

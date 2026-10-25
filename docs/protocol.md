@@ -76,17 +76,11 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 ## 灵矽配置与部署
 
-私有自定义 MCP：URL `https://<域名>/mcp`，Header `Authorization: Bearer <CONTROL_TOKEN>`。DEVICE_ID 必须与 Mac 绑定身份匹配；选择“统一意图识别（Function Call）”，重新发现控制 MCP 的四个工具和设备 MCP 的四个工具并保存关联。工具结果 JSON text 在目标灵矽部署联调通过前，不声称真实语音端已经验证。
+私有自定义 MCP：URL `https://<域名>/mcp`，Header `Authorization: Bearer <CONTROL_TOKEN>`。DEVICE_ID 必须与 Mac 绑定身份匹配；选择“统一意图识别（Function Call）”，重新发现控制 MCP 的四个工具和设备 MCP 的七个工具并保存关联。工具结果 JSON text 在目标灵矽部署联调通过前，不声称真实语音端已经验证。
 
-```text
-你是灵汐编程搭档。把用户原话交给云端 AgentAPI，并把对应 Session 页面投到大屏；你不是编程执行器，不能声称没有编程工具，也不能编造结果。控制 MCP 工具是 new_task、list_tasks、get_task、send_message；设备 MCP 工具是 cast_screen、scan_screens、stop_cast。
+角色介绍完整内容见 [灵汐提示词](linxi-agent-prompt.txt)，与智控台保存的文本保持一致。简短状态查询使用 `get_task`；执行原因和实现细节通过 `send_message` 询问对应任务，再核对 `command_id` 和本轮输入之后的新消息。展示页 URL 用于确定当前被问到的任务，不复用另一个任务的发送目标。
 
-用户明确要做新项目或无关新任务时调用 new_task，text 原样传递。new_task 返回 display_url 后，立即把完整值传给设备 MCP 的 cast_screen，不等待任务完成。用户说继续、修改、完善、修复、暂停时复用目标 task_ref 调用 send_message，返回 display_url 后同样立即 cast_screen；不要调用旧的 start_new_project。
-
-用户问进度、状态或效果时，已知 task_ref 就调用 get_task；说“最近那个/刚才那个/某个任务”时先 list_tasks，按标题、时间和摘要选出明确任务，再 get_task。用户要求切换展示时也是 list_tasks → get_task → cast_screen，不发送消息、不恢复任务。多个 Session 可以同时存在，展示页每 3 秒轮询左侧列表；不要把一个任务的状态当成全部任务。用户说往上或往下滚动当前投屏页面时调用设备 MCP 的 scroll_screen，direction 传 up/down，pages 默认 1。停止投屏只调用 stop_cast，不停止云端任务；默认目标已配置，不要无故 scan_screens。
-
-accepted 只表示排队，confirmed 只表示需求已接受；只有 get_task 明确证明完成时才能说完成。查询结果或写入结果未知时先核对，不重复提交。工具失败要如实说明失败环节。回复保持简洁、自然、完整：直接回应用户，保留必要的状态、原因和下一步；避免重复复述、连续过程播报和无关寒暄。不朗读 JSON、task_ref、command_id、设备编号或 URL；灵矽 session_id 与 AgentAPI task_ref 不是同一个标识。
-```
+页面交互优先 `capture_screen`：一次读取截图和结构，有明确 ID 就点击并检查变化。回复默认一两句，不朗读任务或元素编号；能展开卡片、滚动到证据或显示作品的，实际操作给用户看。
 
 公网须提供 HTTPS。反代关闭 SSE 缓冲、允许 WebSocket，读超时 ≥ 10 min。例如已有 TLS 入口后的 nginx location：
 
@@ -110,6 +104,18 @@ location / {
 ## 设备展示链路
 
 设备展示选择独立于云端四工具和灵矽对话发送目标。控制服务提供一张无需控制令牌的任务展示页，模拟树莓派设备 MCP 负责让本地 Chromium 打开它，再由 AirPlay sender 镜像浏览器画面。设备不访问 AgentAPI，也不持有控制服务令牌；`devui` 只是受保护的联调页面，`internal/voice/ui` 仍是独立语音客户端。
+
+设备 MCP 提供浏览器观察和有限交互：
+
+| 工具 | 返回/行为 |
+| --- | --- |
+| `capture_screen` | MCP `image/png` 截图 + JSON 文本（`url/title/page/structure_error`）；`page` 与 `inspect_browser` 格式相同，可直接使用其中的元素 ID |
+| `inspect_browser` | `url/title/visible_text/frames/elements/partial`，包含当前页、同源子页面及属于该页的独立 iframe 浏览器目标 |
+| `click_browser` | 接受最近观察生成的 `element_id`，在所属页面重新定位真实节点，检查可见性/禁用/遮挡后发送鼠标事件；点击回执不证明应用已完成操作 |
+
+`frames` 带各文档的 URL、标题、可见文字和带 `data-element-id` 的 `html` DOM 树（保留层级及 id/class/ARIA 等属性，省略脚本、样式正文和输入值）。并非预筛选按钮，div、SVG、canvas 等可见节点也有引用，由 AI 结合截图判断交互目标；元素包含 `frame_url`、`label/text`、可选 `expanded` 和 `disabled`。`bounds` 相对于元素所属文档的视口，不应当作整屏坐标重新传入。canvas 内部绘图不是 DOM 节点，不能据此定位内部控件。每个目标最多 240 个元素、8 个可访问文档，每文档文字最多 2400 字符；最多读取 8 个关联 CDP 目标。截断或子目标失败设置 `partial=true`；截图成功但结构读取失败时仍返回图片并明确 `structure_error`，不声称页面完整或只读。
+
+截图使用与 AirPlay 相同的 Chromium 页面。CDP 消息上限 12 MiB，解码后 PNG 上限 8 MiB。结构读取通过固定设备端脚本遍历同源文档，沙箱/跨源预览使用其独立 CDP 目标；不移除 iframe 沙箱，不开放任意 JavaScript 或 CSS selector。元素 ID 不在后续观察中复用，节点移除或导航后拒绝旧引用。操作流程是观察 → 点击 → 再观察验证；展开卡片、播放预览作品不需要向 AgentAPI 发送消息。
 
 | 接口 | 用途 |
 | --- | --- |

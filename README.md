@@ -6,10 +6,17 @@
 
 <h1 align="center">Fenno Air</h1>
 
+<br />
+
 <p align="center">
-  <strong>开口即开工，有屏即主场。</strong><br />
+  <strong>开口即开工，有屏即主场。</strong>
+</p>
+
+<p align="center">
   随你而行，听你指挥的个人 Agent。
 </p>
+
+<br />
 
 <p align="center">
   <a href="#你的-agent跟着你的想法走">认识 Fenno Air</a> ·

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Control Center · 设备管理</title>
+    <link rel="stylesheet" href="/admin-assets/style.css" />
+  </head>
+  <body>
+    <section class="login" id="login" hidden>
+      <h1>Control Center</h1>
+      <p id="login-error">需要控制服务访问令牌</p>
+      <form id="connect"><input id="token" type="password" aria-label="控制服务访问令牌" autocomplete="current-password" /><button>连接</button></form>
+    </section>
+    <div class="app" id="app" hidden>
+      <header><div><span class="mark">✳</span><strong>CONTROL CENTER</strong><small>设备管理与任务观测</small></div><div class="actions"><span id="queried"></span><button id="refresh">刷新</button></div></header>
+      <main>
+        <section class="hero"><div><span class="eyebrow">中心服务 · 只读排查</span><h1>设备与任务</h1><p>查看控制面触达、当前快照和 AgentAPI 任务归属。在线表示最近收到过受鉴权请求。</p></div><div class="badge" id="mode">CONTROL</div></section>
+        <div class="error" id="error" role="alert" hidden></div>
+        <section class="devices"><div class="section-head"><h2>设备</h2><span id="device-count"></span></div><div id="device-list" class="device-list"></div></section>
+        <section class="tasks"><div class="section-head"><h2 id="task-title">任务</h2><span id="task-count"></span></div><div class="task-layout"><div id="task-list" class="task-list"></div><article id="detail" class="detail"><p class="empty">选择一台设备和任务查看详情。</p></article></div></section>
+      </main>
+    </div>
+    <script src="/admin-assets/app.js"></script>
+  </body>
+</html>

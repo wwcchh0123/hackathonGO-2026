@@ -25,6 +25,11 @@ type Options struct {
 	CreateTimeout, RequestTimeout, StopTimeout, ReconcileTimeout, PublishTimeout, PollInterval time.Duration
 	ReferenceTTL                                                                               time.Duration
 	MaxTasks                                                                                   int
+	// DeviceID scopes cloud task discovery to one control-plane device. An empty
+	// value keeps the historical all-sessions behavior used by unit tests and
+	// the single-controller compatibility handler.
+	DeviceID       string
+	IncludeUnowned bool
 }
 
 func defaults(o Options) Options {
@@ -73,6 +78,8 @@ type Controller struct {
 	observing      chan struct{}
 	previewing     chan struct{}
 	viewGeneration uint64
+	deviceID       string
+	includeUnowned bool
 }
 
 func New(ctx context.Context, p agentapi.Provider, state *device.State, store *artifacts.Store, options ...Options) *Controller {
@@ -80,7 +87,8 @@ func New(ctx context.Context, p agentapi.Provider, state *device.State, store *a
 	if len(options) > 0 {
 		o = options[0]
 	}
-	c := &Controller{Provider: p, State: state, store: store, ctx: ctx, queue: make(chan Command, 32), options: defaults(o), tasks: map[string]*taskRecord{}, sessions: map[string]string{}, targets: map[string]string{}, recent: map[string]dedupEntry{}, observing: make(chan struct{}, 4), previewing: make(chan struct{}, 2)}
+	o = defaults(o)
+	c := &Controller{Provider: p, State: state, store: store, ctx: ctx, queue: make(chan Command, 32), options: o, tasks: map[string]*taskRecord{}, sessions: map[string]string{}, targets: map[string]string{}, recent: map[string]dedupEntry{}, observing: make(chan struct{}, 4), previewing: make(chan struct{}, 2), deviceID: o.DeviceID, includeUnowned: o.IncludeUnowned}
 	c.wg.Add(1)
 	go c.work()
 	return c

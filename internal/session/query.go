@@ -36,6 +36,64 @@ func taskCard(s agentapi.Session, ref string) Task {
 	}
 	return t
 }
+
+func (c *Controller) ownsSession(s agentapi.Session) bool {
+	if c.deviceID == "" {
+		return true
+	}
+	if s.Metadata["device_id"] == c.deviceID {
+		return true
+	}
+	return c.includeUnowned && s.Metadata["device_id"] == ""
+}
+
+// listSessions applies the controller's device ownership boundary after the
+// provider query. AgentAPI does not expose metadata filtering, so it walks a
+// bounded number of provider pages until it has enough owned sessions. The
+// returned cursor remains an upstream session cursor and therefore stays safe
+// across refreshes and process restarts.
+func (c *Controller) listSessions(ctx context.Context, o ListOptions) (agentapi.SessionPage, error) {
+	if c.deviceID == "" {
+		return c.Provider.ListSessions(ctx, agentapi.SessionQuery{Limit: o.Limit, Page: o.Page, AgentID: o.AgentID, Status: o.Status, IncludeArchived: o.IncludeArchived, CreatedAfter: o.CreatedAfter, CreatedBefore: o.CreatedBefore})
+	}
+	queryLimit := o.Limit * 2
+	if queryLimit < 20 {
+		queryLimit = 20
+	}
+	if queryLimit > 100 {
+		queryLimit = 100
+	}
+	page := o.Page
+	out := make([]agentapi.Session, 0, o.Limit)
+	for range 16 {
+		result, err := c.Provider.ListSessions(ctx, agentapi.SessionQuery{Limit: queryLimit, Page: page, AgentID: o.AgentID, Status: o.Status, IncludeArchived: o.IncludeArchived, CreatedAfter: o.CreatedAfter, CreatedBefore: o.CreatedBefore})
+		if err != nil {
+			return agentapi.SessionPage{}, err
+		}
+		for i, s := range result.Data {
+			if c.ownsSession(s) {
+				out = append(out, s)
+				if len(out) == o.Limit {
+					next := result.NextPage
+					if next == "" {
+						for _, later := range result.Data[i+1:] {
+							if c.ownsSession(later) {
+								next = result.Data[len(result.Data)-1].ID
+								break
+							}
+						}
+					}
+					return agentapi.SessionPage{Data: out, NextPage: next}, nil
+				}
+			}
+		}
+		if result.NextPage == "" {
+			return agentapi.SessionPage{Data: out}, nil
+		}
+		page = result.NextPage
+	}
+	return agentapi.SessionPage{Data: out, NextPage: page}, nil
+}
 func validateList(o *ListOptions) error {
 	if o.Limit == 0 {
 		o.Limit = 20
@@ -65,7 +123,7 @@ func (c *Controller) ListTasks(ctx context.Context, o ListOptions) (TaskPage, er
 	ctx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
 	defer cancel()
 	now := time.Now().UTC()
-	page, err := c.Provider.ListSessions(ctx, agentapi.SessionQuery{Limit: o.Limit, Page: o.Page, AgentID: o.AgentID, Status: o.Status, IncludeArchived: o.IncludeArchived, CreatedAfter: o.CreatedAfter, CreatedBefore: o.CreatedBefore})
+	page, err := c.listSessions(ctx, o)
 	if err != nil {
 		return TaskPage{}, err
 	}

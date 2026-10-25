@@ -37,6 +37,7 @@ type Options struct {
 	DeviceID       string
 	IncludeUnowned bool
 	Profiles       []ProfileBinding
+	// DefaultProfile is the exact profile key resolved by configuration.
 	DefaultProfile string
 	CursorSecret   []byte
 }
@@ -94,6 +95,9 @@ type Controller struct {
 	bindings       map[string]ProfileBinding
 	defaultProfile string
 	cursorSecret   []byte
+	cursorStates   map[string]cachedProfileCursor
+	cursorOrder    []string
+	cursorBytes    int
 }
 
 func New(ctx context.Context, p agentapi.Provider, state *device.State, store *artifacts.Store, options ...Options) *Controller {
@@ -130,7 +134,7 @@ func New(ctx context.Context, p agentapi.Provider, state *device.State, store *a
 			panic("cannot generate cursor signing secret")
 		}
 	}
-	c := &Controller{Provider: p, State: state, store: store, ctx: ctx, queue: make(chan Command, 32), options: o, tasks: map[string]*taskRecord{}, sessions: map[string]string{}, targets: map[string]string{}, recent: map[string]dedupEntry{}, observing: make(chan struct{}, 4), previewing: make(chan struct{}, 2), deviceID: o.DeviceID, includeUnowned: o.IncludeUnowned, bindings: bindings, defaultProfile: defaultProfile, cursorSecret: secret}
+	c := &Controller{Provider: p, State: state, store: store, ctx: ctx, queue: make(chan Command, 32), options: o, tasks: map[string]*taskRecord{}, sessions: map[string]string{}, targets: map[string]string{}, recent: map[string]dedupEntry{}, observing: make(chan struct{}, 4), previewing: make(chan struct{}, 2), deviceID: o.DeviceID, includeUnowned: o.IncludeUnowned, bindings: bindings, defaultProfile: defaultProfile, cursorSecret: secret, cursorStates: map[string]cachedProfileCursor{}}
 	c.wg.Add(1)
 	go c.work()
 	return c
@@ -157,21 +161,18 @@ func (c *Controller) bindingForTaskLocked(t *taskRecord) (ProfileBinding, bool) 
 
 func (c *Controller) selectProfileLocked(runtime string) (ProfileBinding, error) {
 	if runtime == "" {
-		runtime = c.defaultProfile
+		binding, ok := c.bindings[c.defaultProfile]
+		if ok && binding.Profile.CreateEnabled {
+			return binding, nil
+		}
+		return ProfileBinding{}, business("runtime_unavailable", "", c.defaultProfile, "configure a create-enabled default profile")
 	}
-	binding, ok := c.bindings[runtime]
-	if !ok || !binding.Profile.CreateEnabled {
-		for _, candidate := range c.bindings {
-			if candidate.Profile.Runtime == runtime && candidate.Profile.CreateEnabled {
-				binding, ok = candidate, true
-				break
-			}
+	for _, candidate := range c.bindings {
+		if candidate.Profile.Runtime == runtime && candidate.Profile.CreateEnabled {
+			return candidate, nil
 		}
 	}
-	if !ok || !binding.Profile.CreateEnabled {
-		return ProfileBinding{}, business("runtime_unavailable", "", runtime, "list_tasks with runtime or choose an available runtime")
-	}
-	return binding, nil
+	return ProfileBinding{}, business("runtime_unavailable", "", runtime, "list_tasks with runtime or choose an available runtime")
 }
 
 func requestedModel(profile runtimeprofile.Profile, requested agentapi.Model) (agentapi.Model, error) {

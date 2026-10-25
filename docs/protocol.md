@@ -58,7 +58,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 `list_tasks` 返回 `data/next_page/has_more/sort/scope/queried_at/filters/partial/complete/errors`。生产 `scope=runtime_profiles`，按 `created_at desc, session_id desc, runtime` 稳定合并；`sort=created_at_desc`，不能称为最近活跃。每个 profile 固定 Agent ID/version/environment，不接受调用方 Agent ID。可按 runtime 和 `model:{id,effort}` 过滤；HTTP 对应 `runtime/model/effort` 查询参数。时间过滤为 RFC3339，对应 created_at[gte/lte]。
 
-签名游标保存首次查询快照、各 profile 的上游游标/有界 lookahead、完整配置 generation、查询 fingerprint（含设备）和 10 分钟到期时间；压缩后编码，调用方不得解析或改写。签名密钥在进程内随机生成，重启后旧游标失效。篡改、过期、查询或配置不匹配返回 409，重新查询第一页。`complete` 表示本页全部 profile 查询完整，是否还有任务另看 `has_more`。任一 profile 查询失败返回 `partial=true,complete=false,errors:[{runtime,code,retryable}]`，保留可读任务并停止返回 next_page。摘要失败只标记对应 summary_unavailable。
+游标是短随机引用与 HMAC 签名，不携带任务正文；服务端保存压缩的不可变分页快照，包括首次查询 snapshot、各 profile 上游游标/有界 lookahead、完整配置 generation、查询 fingerprint（含设备）和到期时间。每个控制器最多缓存 256 个快照、压缩数据总计 8 MiB，单快照原文最多 2 MiB；最长保留 10 分钟，超限淘汰最旧快照。调用方不得解析或改写游标，缓存丢失/淘汰或进程重启后需重新查询第一页。签名密钥在进程内随机生成。篡改、过期、查询或配置不匹配返回 409，重新查询第一页。`complete` 表示本页全部 profile 查询完整，是否还有任务另看 `has_more`。任一 profile 查询失败返回 `partial=true,complete=false,errors:[{runtime,code,retryable}]`，所有可读 profile 的首次查询并发启动（最多 16 个），单项超时保留其他 profile 已读取的结果，并停止返回 next_page。摘要失败只标记对应 summary_unavailable。
 任务卡片含 task_ref、标题、创建/更新时间、原始状态、archived、runtime、model、parent_task_ref、can_continue 和 continue_reason。summary 只来自最近非空 agent.message 的多文本块合并摘录（上限 400 字），带来源 event_id 和消息原时间；每次最多检查最近 8 条 Agent 消息，尚有更早候选时以 summary_unavailable 标记不完整。单项摘要失败保留其他任务并标记 summary_unavailable。旧摘要不表示新轮次已完成，工具/错误事件不覆盖摘录。
 
 `get_task` 额外含 queried_at、stop_reason、messages、events、事件分页、files（单页最多 50 个元信息）、files_unavailable、command、可选 result_url。没有本地预览 URL 不代表没有云端产物。详情不透传内部 Agent 配置、资源认证数据或 Vault 凭据。

@@ -80,6 +80,8 @@ func Load() (Config, error) {
 	if err := c.Profiles.Validate(); err != nil {
 		return c, err
 	}
+	selected, _ := c.Profiles.ResolveDefault(c.DefaultRuntime)
+	c.DefaultRuntime = selected.Key
 	if c.Mode == "http" && (c.AgentURL == "" || c.AgentKey == "" || c.Token == "") {
 		return c, fmt.Errorf("http mode requires AGENTAPI_BASE_URL, AGENTAPI_API_KEY and CONTROL_TOKEN")
 	}

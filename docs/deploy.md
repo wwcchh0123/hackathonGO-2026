@@ -61,7 +61,7 @@ make build run
 
 ## Runtime profiles
 
-设置 `AGENTAPI_RUNTIME_PROFILES_JSON` 为以下 JSON 对象（也接受 profiles 数组），并移除旧的 `AGENTAPI_AGENT_ID/AGENTAPI_AGENT_VERSION/AGENTAPI_ENVIRONMENT_ID/AGENTAPI_VAULT_IDS`。两套配置并存拒绝启动。最多 16 个 profile，每个 runtime 同时只允许一个 create_enabled profile；版本轮换时给旧版本独立 key、关闭 create_enabled，保留 read_enabled。`AGENTAPI_DEFAULT_RUNTIME` 可覆盖 JSON 的默认值，必须指向可创建 profile。
+设置 `AGENTAPI_RUNTIME_PROFILES_JSON` 为以下 JSON 对象（也接受 profiles 数组），并移除旧的 `AGENTAPI_AGENT_ID/AGENTAPI_AGENT_VERSION/AGENTAPI_ENVIRONMENT_ID/AGENTAPI_VAULT_IDS`。两套配置并存拒绝启动。最多 16 个 profile，每个 runtime 同时只允许一个 create_enabled profile；版本轮换时给旧版本独立 key、关闭 create_enabled，保留 read_enabled。`AGENTAPI_DEFAULT_RUNTIME` 可覆盖 JSON 的默认值，可传 runtime 名或精确 profile key，必须选择可创建 profile。runtime 名在版本轮换时始终选择可创建的新版本，旧只读版本不会遮蔽它。公开工具的 runtime 参数只接受 claudecode/codex/native，不接受 profile key；这三个保留名称作为 key 时必须与自身 runtime 一致。
 
 ```json
 {

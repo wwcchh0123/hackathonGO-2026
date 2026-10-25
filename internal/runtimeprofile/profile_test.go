@@ -90,3 +90,44 @@ func TestRegistryRejectsInvalidConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRuntimeNamesAreReservedAndRotationSelectsCreatableVersion(t *testing.T) {
+	r := MockRegistry()
+	r.Profiles[1].Key = "native"
+	r.Profiles[2].Key = "native-v2"
+	if err := r.Validate(); err == nil {
+		t.Fatal("cross-runtime reserved key accepted")
+	}
+	r = MockRegistry()
+	old := r.Profiles[1]
+	old.CreateEnabled = false
+	current := old
+	current.Key = "codex-v2"
+	current.AgentVersion = 2
+	current.CreateEnabled = true
+	r.Profiles[1] = old
+	r.Profiles = append(r.Profiles, current)
+	r.DefaultRuntime = "codex"
+	if err := r.Validate(); err != nil {
+		t.Fatal("read-only old profile blocks rotation", err)
+	}
+	for _, selection := range []string{"codex", "codex-v2"} {
+		p, ok := r.ResolveDefault(selection)
+		if !ok || p.Key != "codex-v2" {
+			t.Fatal(selection, p, ok)
+		}
+	}
+	if p, ok := r.Lookup("codex"); !ok || p.CreateEnabled {
+		t.Fatal("exact lookup must retain old read-only profile", p, ok)
+	}
+	if _, ok := r.ResolveDefault("missing"); ok {
+		t.Fatal("unknown default accepted")
+	}
+	r.Profiles[3].CreateEnabled = false
+	if _, ok := r.ResolveDefault("codex"); ok {
+		t.Fatal("disabled runtime default accepted")
+	}
+	if _, ok := r.ResolveDefault("codex-v2"); ok {
+		t.Fatal("disabled profile default accepted")
+	}
+}

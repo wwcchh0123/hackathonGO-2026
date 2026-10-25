@@ -125,6 +125,9 @@ func (r Registry) Validate() error {
 		if !validRuntimes[p.Runtime] {
 			return fmt.Errorf("profile %q has unsupported runtime %q", p.Key, p.Runtime)
 		}
+		if validRuntimes[p.Key] && p.Key != p.Runtime {
+			return fmt.Errorf("profile key %q is reserved for runtime %q", p.Key, p.Key)
+		}
 		if seenKey[p.Key] || (p.CreateEnabled && creates[p.Runtime]) {
 			return fmt.Errorf("duplicate runtime profile %q", p.Key)
 		}
@@ -162,8 +165,8 @@ func (r Registry) Validate() error {
 		return err
 	}
 	if r.DefaultRuntime != "" {
-		p, ok := r.Lookup(r.DefaultRuntime)
-		if !ok || !p.CreateEnabled {
+		_, ok := r.ResolveDefault(r.DefaultRuntime)
+		if !ok {
 			return fmt.Errorf("default runtime %q is not a create-enabled profile", r.DefaultRuntime)
 		}
 	}
@@ -198,12 +201,22 @@ func (r Registry) Lookup(key string) (Profile, bool) {
 			return p, true
 		}
 	}
-	for _, p := range r.Profiles {
-		if p.Runtime == key && p.CreateEnabled {
-			return p, true
-		}
-	}
 	return Profile{}, false
+}
+
+// ResolveDefault accepts a runtime name or an explicit profile key. Runtime
+// names always select the create-enabled version, including during rotation.
+func (r Registry) ResolveDefault(selection string) (Profile, bool) {
+	if validRuntimes[selection] {
+		for _, p := range r.Profiles {
+			if p.Runtime == selection && p.CreateEnabled {
+				return p, true
+			}
+		}
+		return Profile{}, false
+	}
+	p, ok := r.Lookup(selection)
+	return p, ok && p.CreateEnabled
 }
 
 func (r Registry) Keys() []string {

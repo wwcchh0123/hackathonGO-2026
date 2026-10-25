@@ -13,12 +13,23 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wwcchh0123/hackathonGO-2026/internal/agentapi"
 )
 
-const profileCursorTTL = 10 * time.Minute
+const (
+	profileCursorTTL      = 10 * time.Minute
+	maxProfileCursors     = 256
+	maxProfileCursorBytes = 8 << 20
+	maxProfileCursorState = 2 << 20
+)
+
+type cachedProfileCursor struct {
+	data    []byte
+	expires time.Time
+}
 
 type profileCursorEntry struct {
 	Buffer   []agentapi.Session `json:"lookahead,omitempty"`
@@ -49,40 +60,77 @@ func (c *Controller) signProfileCursor(cursor profileCursor) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if len(raw) > maxProfileCursorState {
+		return "", business("catalog_cursor_too_large", "", "", "narrow the runtime or time filters")
+	}
 	var compressed bytes.Buffer
 	zipper := zlib.NewWriter(&compressed)
 	_, _ = zipper.Write(raw)
 	_ = zipper.Close()
-	raw = compressed.Bytes()
+	data := compressed.Bytes()
+	id := agentapi.ID()
+	c.mu.Lock()
+	c.pruneProfileCursorsLocked(time.Now())
+	for len(c.cursorStates) >= maxProfileCursors || c.cursorBytes+len(data) > maxProfileCursorBytes {
+		oldest := c.cursorOrder[0]
+		c.cursorOrder = c.cursorOrder[1:]
+		c.cursorBytes -= len(c.cursorStates[oldest].data)
+		delete(c.cursorStates, oldest)
+	}
+	c.cursorStates[id] = cachedProfileCursor{data: data, expires: cursor.ExpiresAt}
+	c.cursorOrder = append(c.cursorOrder, id)
+	c.cursorBytes += len(data)
+	c.mu.Unlock()
+	// Only a random state reference is sent over HTTP/MCP. The signed snapshot
+	// remains immutable and bounded in memory, independent of lookahead size.
+	ref := "v2." + id
 	sig := hmac.New(sha256.New, c.cursorSecret)
-	_, _ = sig.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(raw) + "." + base64.RawURLEncoding.EncodeToString(sig.Sum(nil)), nil
+	_, _ = sig.Write([]byte(ref))
+	return ref + "." + base64.RawURLEncoding.EncodeToString(sig.Sum(nil)), nil
 }
+
+func (c *Controller) pruneProfileCursorsLocked(now time.Time) {
+	order := c.cursorOrder[:0]
+	for _, id := range c.cursorOrder {
+		entry := c.cursorStates[id]
+		if !now.Before(entry.expires) {
+			c.cursorBytes -= len(entry.data)
+			delete(c.cursorStates, id)
+			continue
+		}
+		order = append(order, id)
+	}
+	c.cursorOrder = order
+}
+
 func (c *Controller) parseProfileCursor(raw, fingerprint string) (profileCursor, error) {
 	parts := strings.Split(raw, ".")
-	if len(parts) != 2 {
+	if len(parts) != 3 || parts[0] != "v2" || len(parts[1]) != 32 {
 		return profileCursor{}, ErrCursorExpired
 	}
-	body, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return profileCursor{}, ErrCursorExpired
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return profileCursor{}, ErrCursorExpired
 	}
 	sig := hmac.New(sha256.New, c.cursorSecret)
-	_, _ = sig.Write(body)
+	_, _ = sig.Write([]byte(parts[0] + "." + parts[1]))
 	if !hmac.Equal(sig.Sum(nil), signature) {
 		return profileCursor{}, ErrCursorExpired
 	}
-	unzip, err := zlib.NewReader(bytes.NewReader(body))
+	c.mu.Lock()
+	c.pruneProfileCursorsLocked(time.Now())
+	state, ok := c.cursorStates[parts[1]]
+	c.mu.Unlock()
+	if !ok {
+		return profileCursor{}, ErrCursorExpired
+	}
+	unzip, err := zlib.NewReader(bytes.NewReader(state.data))
 	if err != nil {
 		return profileCursor{}, ErrCursorExpired
 	}
 	defer unzip.Close()
-	plain, err := io.ReadAll(io.LimitReader(unzip, 2<<20))
-	if err != nil {
+	plain, err := io.ReadAll(io.LimitReader(unzip, maxProfileCursorState+1))
+	if err != nil || len(plain) > maxProfileCursorState {
 		return profileCursor{}, ErrCursorExpired
 	}
 	var cursor profileCursor
@@ -111,7 +159,7 @@ func (c *Controller) profileBindings(runtime string) []ProfileBinding {
 		if !binding.Profile.ReadEnabled || binding.Provider == nil {
 			continue
 		}
-		if runtime != "" && runtime != binding.Profile.Runtime && runtime != binding.Profile.Key {
+		if runtime != "" && runtime != binding.Profile.Runtime {
 			continue
 		}
 		out = append(out, binding)
@@ -200,13 +248,9 @@ func (c *Controller) listProfileTasks(ctx context.Context, o ListOptions) (TaskP
 	}
 	page := TaskPage{Data: []Task{}, Sort: "created_at_desc", Scope: "runtime_profiles", QueriedAt: time.Now().UTC(), Filters: o, Complete: true}
 	failed := map[string]bool{}
-	fill := func(b ProfileBinding) {
+	acceptHead := func(b ProfileBinding, entry profileCursorEntry, err error) {
 		key := b.Profile.Key
-		if failed[key] {
-			return
-		}
-		entry := cursor.Profiles[key]
-		if err := c.fillProfileHead(ctx, b, o, cursor.Snapshot, &entry); err != nil {
+		if err != nil {
 			failed[key] = true
 			page.Partial = true
 			page.Complete = false
@@ -214,8 +258,36 @@ func (c *Controller) listProfileTasks(ctx context.Context, o ListOptions) (TaskP
 		}
 		cursor.Profiles[key] = entry
 	}
-	for _, b := range bindings {
-		fill(b)
+	fill := func(b ProfileBinding) {
+		if failed[b.Profile.Key] {
+			return
+		}
+		entry := cursor.Profiles[b.Profile.Key]
+		err := c.fillProfileHead(ctx, b, o, cursor.Snapshot, &entry)
+		acceptHead(b, entry, err)
+	}
+	// Registry validation caps this at 16 concurrent profile reads. Starting
+	// every head before waiting prevents one timeout from starving healthy
+	// profiles of the shared page budget.
+	type headResult struct {
+		entry profileCursorEntry
+		err   error
+	}
+	heads := make([]headResult, len(bindings))
+	var wg sync.WaitGroup
+	for i, b := range bindings {
+		wg.Add(1)
+		go func(i int, b ProfileBinding) {
+			defer wg.Done()
+			entry := cursor.Profiles[b.Profile.Key]
+			err := c.fillProfileHead(ctx, b, o, cursor.Snapshot, &entry)
+			heads[i] = headResult{entry: entry, err: err}
+		}(i, b)
+	}
+	wg.Wait()
+	for i, b := range bindings {
+		result := heads[i]
+		acceptHead(b, result.entry, result.err)
 	}
 	for len(page.Data) < o.Limit {
 		var winner *ProfileBinding
@@ -255,7 +327,9 @@ func (c *Controller) listProfileTasks(ctx context.Context, o ListOptions) (TaskP
 			task.Summary, task.SummaryUnavailable = c.summary(ctx, winner.Provider, s.ID)
 		}
 		page.Data = append(page.Data, task)
-		fill(*winner)
+		if len(page.Data) < o.Limit {
+			fill(*winner)
+		}
 	}
 	hasMore := false
 	for _, entry := range cursor.Profiles {

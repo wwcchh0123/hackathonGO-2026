@@ -46,3 +46,23 @@ func TestRuntimeProfileConfigAndLegacyExclusion(t *testing.T) {
 		t.Fatal("missing http credentials")
 	}
 }
+
+func TestDefaultRuntimeResolvesToNewVersionDuringRotation(t *testing.T) {
+	for _, key := range []string{"AGENTAPI_AGENT_ID", "AGENTAPI_AGENT_VERSION", "AGENTAPI_ENVIRONMENT_ID", "AGENTAPI_VAULT_IDS", "AGENTAPI_DEFAULT_RUNTIME", "AGENTAPI_MODE", "DEV_TOOLS", "PUBLIC_URL"} {
+		t.Setenv(key, "")
+	}
+	registry := runtimeprofile.MockRegistry()
+	registry.DefaultRuntime = "codex"
+	registry.Profiles[1].CreateEnabled = false
+	next := registry.Profiles[1]
+	next.Key = "codex-v2"
+	next.AgentVersion = 2
+	next.CreateEnabled = true
+	registry.Profiles = append(registry.Profiles, next)
+	raw, _ := json.Marshal(registry)
+	t.Setenv("AGENTAPI_RUNTIME_PROFILES_JSON", string(raw))
+	cfg, err := Load()
+	if err != nil || cfg.DefaultRuntime != "codex-v2" {
+		t.Fatal(cfg.DefaultRuntime, err)
+	}
+}

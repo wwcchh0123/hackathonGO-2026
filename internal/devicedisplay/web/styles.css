@@ -200,6 +200,8 @@ code, time { font-family: var(--mono); }
 .status-pill.live { color: var(--green); }
 .status-pill.live i { background: var(--green); }
 .status-pill.done i { background: #8d8d8d; }
+.status-pill.error { color: #ef7d78; }
+.status-pill.error i { background: #ef7d78; }
 
 .run-meta-row {
   display: flex;

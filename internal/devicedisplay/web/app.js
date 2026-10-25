@@ -16,6 +16,7 @@ const state = {
   source: null,
   listBusy: false,
   status: 'ready',
+  stopReason: 'unknown',
   total: 0,
   expanded: new Set(),
   lastRenderAt: 0,
@@ -156,18 +157,22 @@ function taskStatusClass(status) {
 
 function statusLabel(status) {
   if (status === 'running' || status === 'rescheduling') return 'Working';
-  if (status === 'idle') return 'Worked';
+  if (status === 'creating') return 'Creating';
+  if (status === 'idle') return ({ end_turn: 'Turn ended', interrupted: 'Paused', requires_action: 'Needs input', retries_exhausted: 'Retries exhausted', budget_reached: 'Budget reached' })[state.stopReason] || 'Idle';
   if (status === 'terminated' || status === 'failed') return 'Stopped';
   return 'Ready';
 }
 
-function setStatus(status) {
+function setStatus(status, stopReason) {
   state.status = status || 'ready';
   const running = state.status === 'running' || state.status === 'rescheduling';
-  const done = state.status === 'idle';
+  if (state.status !== 'idle') state.stopReason = 'unknown';
+  else if (stopReason !== undefined) state.stopReason = (typeof stopReason === 'string' ? stopReason : stopReason?.type) || 'unknown';
+  const done = state.status === 'idle' && state.stopReason === 'end_turn';
+  const failed = state.status === 'idle' && ['retries_exhausted', 'budget_reached'].includes(state.stopReason);
   if (running) clearPreview();
-  $('status').textContent = running ? 'WORKING' : done ? 'DONE' : String(state.status || 'READY').toUpperCase();
-  $('status-pill').className = `status-pill ${running ? 'live' : done ? 'done' : ''}`;
+  $('status').textContent = statusLabel(state.status).toUpperCase();
+  $('status-pill').className = `status-pill ${running ? 'live' : done ? 'done' : failed ? 'error' : ''}`;
   $('run-summary-label').textContent = statusLabel(state.status);
 }
 
@@ -192,20 +197,22 @@ function previewSource(url) {
     // same path from the page's current origin avoids a second ngrok
     // interstitial in desktop browsers, while the device still requests the
     // exact same path through its already-bypassed public display page.
-    if (result.pathname.startsWith('/results/')) {
-      const current = new URL(window.location.href);
-      result.protocol = current.protocol;
-      result.host = current.host;
-    }
+    if (!/^\/results\/[0-9a-f]{32}\/(?:.*\.html)?$/i.test(result.pathname)) return '';
+    const current = new URL(window.location.href);
+    result.protocol = current.protocol;
+    result.host = current.host;
+    result.searchParams.delete('_linxi_raw');
+    result.searchParams.delete('_linxi_channel');
     return result.href;
   } catch {
-    return url;
+    return '';
   }
 }
 
 function showPreview(url) {
   if (!url || state.status !== 'idle') return;
   const source = previewSource(url);
+  if (!source) return;
   state.previewURL = url;
   $('preview-pane').hidden = false;
   $('preview-frame').hidden = false;
@@ -280,6 +287,7 @@ function applySelectedTask() {
 
 function resetView() {
   clearPreview();
+  state.stopReason = 'unknown';
   state.events = [];
   state.seen.clear();
   state.total = 0;
@@ -331,9 +339,6 @@ async function refreshSessions() {
     } else if (!state.taskRef && page.data?.length) {
       selectTask(page.data[0].task_ref);
       return;
-    } else if (state.taskRef && !state.sessions.has(state.taskRef) && page.data?.length) {
-      selectTask(page.data[0].task_ref);
-      return;
     }
     applySelectedTask();
   } catch (error) {
@@ -347,7 +352,7 @@ function selectTask(taskRef) {
   if (!taskRef) return;
   const changed = state.taskRef !== taskRef;
   state.taskRef = taskRef;
-  state.selectedTask = state.sessions.get(taskRef) || state.selectedTask;
+  state.selectedTask = state.sessions.get(taskRef) || null;
   updateURL(taskRef);
   renderSessionList();
   if (!changed) {
@@ -510,7 +515,7 @@ function renderTimeline() {
 function applySnapshot(snapshot) {
   if (snapshot.status) {
     if (snapshot.status === 'running' || snapshot.status === 'rescheduling') clearPreview();
-    setStatus(snapshot.status);
+    setStatus(snapshot.status, snapshot.stop_reason);
     if (state.selectedTask) state.selectedTask = { ...state.selectedTask, status: snapshot.status };
   }
   if (snapshot.session_id) $('session-id').textContent = snapshot.session_id.slice(0, 18);
@@ -525,6 +530,10 @@ function applyMeta(meta) {
   $('source').textContent = meta.source || 'AgentAPI session events';
   if (meta.sessionId) $('session-id').textContent = meta.sessionId.slice(0, 18);
   if (meta.startedAt) $('time-range').textContent = `${timeOf(meta.startedAt)} — ${timeOf(meta.endedAt)}`;
+  if (meta.taskRef === state.taskRef && meta.title) {
+    state.selectedTask = { ...state.selectedTask, task_ref: meta.taskRef, title: meta.title, session_id: meta.sessionId, runtime: meta.runtime, status: state.status };
+    applySelectedTask();
+  }
 }
 
 function addEvent(event) {
@@ -541,7 +550,7 @@ function addEvent(event) {
     state.previewAttempts = 0;
   }
   if (event.type === 'session.status_idle') {
-    setStatus('idle');
+    setStatus('idle', event.stop_reason);
     requestPreview();
   }
   if (event.type === 'session.status_terminated') setStatus('terminated');
@@ -556,6 +565,7 @@ function connectEvents(taskRef) {
   if (!taskRef) return;
   const source = new EventSource(`./events?task_ref=${encodeURIComponent(taskRef)}`);
   state.source = source;
+  let checkingReference = false;
   source.addEventListener('device-snapshot', (event) => { if (state.taskRef === taskRef) applySnapshot(JSON.parse(event.data)); });
   source.addEventListener('session-meta', (event) => { if (state.taskRef === taskRef) applyMeta(JSON.parse(event.data)); });
   source.addEventListener('session-event', (event) => { if (state.taskRef === taskRef) { try { addEvent(JSON.parse(event.data)); } catch (error) { console.error(error); } } });
@@ -568,6 +578,18 @@ function connectEvents(taskRef) {
     if (state.taskRef !== taskRef) return;
     $('connection').textContent = 'SSE reconnecting';
     $('sidebar-connection').textContent = 'reconnecting';
+    if (!checkingReference) {
+      checkingReference = true;
+      fetch(`./events?task_ref=${encodeURIComponent(taskRef)}`, { method: 'HEAD', cache: 'no-store' })
+        .then((response) => {
+          if (state.source !== source || state.taskRef !== taskRef) return;
+          if ([400, 403, 404].includes(response.status)) {
+            source.close();
+            $('connection').textContent = 'Task unavailable · select a task again';
+            $('sidebar-connection').textContent = 'unavailable';
+          }
+        }).catch(() => {}).finally(() => { checkingReference = false; });
+    }
   };
 }
 

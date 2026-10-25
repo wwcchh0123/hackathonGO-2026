@@ -53,7 +53,7 @@ function taskButton(task) {
   const title = document.createElement('strong'); title.textContent = task.title || '未命名任务';
   const status = document.createElement('span'); status.textContent = `${task.device_id} · ${statusLabel(task.status)}`; status.className = task.attention?.length ? 'attention' : 'online';
   const meta = document.createElement('small'); meta.textContent = `${task.attention?.join(' · ') || '无错误'} · 更新于 ${fmt(task.updated_at)}`;
-  return makeButton(`row ${selectedTask?.ref === task.ref && selectedTask?.device_id === task.device_id ? 'selected' : ''}`, [title, status, meta], () => loadTask(task.device_id, task.ref));
+  return makeButton(`row ${selectedTask?.ref === task.task_ref && selectedTask?.device_id === task.device_id ? 'selected' : ''}`, [title, status, meta], () => loadTask(task.device_id, task.task_ref));
 }
 async function renderDevices() {
   const pane = $('list-pane'); pane.replaceChildren(); appendText(pane, 'h2', '设备', 'pane-title');
@@ -89,14 +89,20 @@ async function loadDevice(id) {
 }
 async function loadTask(deviceId, ref) {
   selectedDevice = deviceId; selectedTask = { device_id: deviceId, ref }; view = 'tasks'; renderNav();
+  const detail = $('detail'); detail.replaceChildren(); appendText(detail, 'p', '正在读取任务…', 'empty');
   try {
-    const result = await request(`/api/admin/tasks/${encodeURIComponent(deviceId)}/${encodeURIComponent(ref)}?events_limit=30`); const task = result.task; const detail = $('detail'); detail.replaceChildren();
+    const result = await request(`/api/admin/tasks/${encodeURIComponent(deviceId)}/${encodeURIComponent(ref)}?events_limit=30`);
+    if (selectedTask?.ref !== ref || selectedTask?.device_id !== deviceId) return;
+    const task = result.task; detail.replaceChildren();
     appendText(detail, 'h2', task.title || '未命名任务'); appendText(detail, 'p', `设备 ${deviceId} · ${statusLabel(task.status)} · ${task.session_id || '尚未创建云端会话'} · 停止原因：${task.stop_reason || '未知'}`, 'detail-meta');
     if (task.command) appendText(detail, 'p', `命令 ${task.command.command_id} · ${task.command.state}/${task.command.phase}${task.command.error ? ` · ${task.command.error}` : ''}`, 'command');
     const summary = document.createElement('pre'); summary.textContent = task.summary?.text || '暂无摘要'; detail.append(summary); appendText(detail, 'h3', `原始事件 · ${(task.events || []).length} 条`);
-    for (const raw of task.events || []) { const event = document.createElement('pre'); try { event.textContent = JSON.stringify(JSON.parse(raw), null, 2); } catch { event.textContent = raw; } detail.append(event); }
+    for (const raw of task.events || []) { const event = document.createElement('pre'); try { event.textContent = JSON.stringify(typeof raw === 'string' ? JSON.parse(raw) : raw, null, 2); } catch { event.textContent = String(raw); } detail.append(event); }
     const back = makeButton('link-button', [document.createTextNode('查看所属设备')], () => loadDevice(deviceId)); detail.prepend(back); showError('');
-  } catch (error) { showError(error.message); }
+  } catch (error) {
+    if (selectedTask?.ref !== ref || selectedTask?.device_id !== deviceId) return;
+    detail.replaceChildren(); appendText(detail, 'p', '任务详情读取失败，请重试。', 'empty'); showError(error.message);
+  }
 }
 async function loadDashboard() { try { dashboard = await request(`/api/admin/overview?query=${encodeURIComponent(query)}`); $('queried').textContent = `查询于 ${fmt(dashboard.queried_at)}`; render(); showError(''); } catch (error) { showError(error.message); } }
 async function boot() { try { const config = await request('/api/admin/bootstrap'); $('mode').textContent = config.service; $('app').hidden = false; $('login').hidden = true; await loadDashboard(); } catch (error) { $('login-error').textContent = error.message; $('login').hidden = false; } }

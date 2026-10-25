@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>作品预览</title>
+  <style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;border:0;width:100%;height:100%}#storage-error{position:fixed;top:0;left:0;right:0;margin:0;padding:8px;background:#fff3cd;color:#664d03;font:14px sans-serif;z-index:1}</style>
+  <script src="/preview-assets/viewer.js" defer></script>
+</head>
+<body data-storage-scope="{{.Scope}}">
+  <p id="storage-error" role="status" hidden></p>
+  <iframe id="artifact" title="作品" sandbox="allow-scripts allow-forms allow-modals allow-downloads"></iframe>
+</body>
+</html>

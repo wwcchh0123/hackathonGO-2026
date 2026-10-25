@@ -123,7 +123,8 @@ location / {
 | GET /api/tasks/{task_ref}/events | 有界最近历史加实时 SSE；建连触发观察，断连取消观察 |
 | GET /api/sessions/{id}/events | 兼容 #12：只允许已明确选择展示的 Session |
 | POST /api/tasks/{task_ref}/preview | 空闲时有界下载 HTML 导出文件并托管，返回 result_url |
-| GET /results/{随机发布ID}/... | 已发布静态预览；不暴露目录列表 |
+| GET /results/{随机发布ID}/... | HTML 入口为受信预览容器，非 HTML 为隔离静态资源；不暴露目录列表或内部发布元数据 |
+| GET /preview-assets/viewer.js、bootstrap.js | 产品预览容器与隔离作品的本地运行资源；无需控制令牌 |
 | GET /healthz | 无凭据健康检查，不检查云依赖 |
 
 给设备浏览器使用的公开展示接口：
@@ -135,6 +136,18 @@ location / {
 | GET /display/events?task_ref=... | 先发送任务快照和页面元信息，再回放有界原始事件并持续推送 |
 
 展示页每 3 秒轮询一次 `/display/sessions`，所以页面打开后创建的新任务会自动出现在左侧列表。点击列表项只更新当前页面的 `task_ref` 并重建该任务的事件 SSE，不发送消息、不 interrupt、不改变灵矽对话的默认发送目标；设备也可以重新调用 `cast_screen` 投屏另一个任务的 `display_url`。展示页的 `task_ref` 只允许当前进程仍保留的任务引用；未知/过期引用的事件流返回 404。设备浏览器应直接使用 `display_url`，不要拼接内部 API 地址或附带控制令牌。
+
+显式指定的 `task_ref` 不因目录第一页缺项而改变，目录刷新只更新列表和已有任务信息；只有未指定展示目标时才默认选择第一页任务。切换目标后不会沿用上一任务的标题或结果；`session-meta.title` 提供未在第一页出现的任务标题。`HEAD /display/events?task_ref=...` 只检查引用与详情可读性，不建立观察；流初始失败时展示页据此明确显示引用不可用。GET 的 `after` 与 Last-Event-ID 使用相同游标检查。
+
+展示页将 `idle` 与本轮 `stop_reason` 一起呈现：`end_turn` 为本轮结束，`interrupted` 为暂停，`requires_action` 为等待输入，预算/重试耗尽分别显示原因，未知原因显示空闲。目录刷新不覆盖当前轮次的停止原因，开始运行或切换任务会清除旧原因；本轮结束不作为整个任务或外部动作成功的证明。
+
+### 静态作品的交互与本地数据
+
+结果 HTML 地址先加载产品自有的受信容器，容器内的作品使用 opaque sandbox iframe。内部 `_linxi_raw=1` 请求返回作品启动页，先初始化隔离存储再执行原始 HTML；该参数不是鉴权凭据，也不应交给设备作为展示入口。原始源码仍通过 AgentAPI Files API 获取。
+
+作品可执行前端脚本、处理表单事件、显示确认框和下载文件；CSP 继续禁止外部连接及真实表单外发，不授予 `allow-same-origin`。控制页面的 DOM、Cookie 和其他存储键不提供给作品。未受信的 SVG、无扩展名 HTML 等静态内容也保留 sandbox 响应策略。
+
+`localStorage` 通过当前作品的受限存储桥实现，数据保存在当前浏览器：同一 Session 的新发布版本复用作用域，不同 Session 隔离；不保证应用自己改变数据格式后的兼容。父子消息校验 iframe、opaque origin 和单次加载随机通道；每个作用域最多 1000 项、序列化数据最多 1 MiB，超限写入抛出 `QuotaExceededError`。浏览器拒绝持久化时容器提示无法保存。发布缓存用保留文件 `.linxi-preview-scope` 记录作用域摘要，该名称不能作为用户导出文件，不能通过 HTTP 读取；旧缓存没有此元数据时按单次发布隔离。缓存淘汰会一并清理元数据，不新增数据库或上游文件写入。
 
 设备 API 使用 Bearer 或 Cookie；浏览器 WebSocket/EventSource 用 Cookie，密钥不进入 URL。MCP 不接受 Cookie。快照中的 task_ref/session_id 只表示展示选择，command_id/command_state/error 表示该任务的本地控制结果；status 是最近查询或实时观察得到的云端状态，stop_reason 独立返回，summary_event_id/summary_time 保留摘录来源。
 

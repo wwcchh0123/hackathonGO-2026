@@ -13,8 +13,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -226,29 +224,8 @@ func handler(cfg config.Config, c *session.Controller, manager *controlplane.Man
 	mux.Handle("POST /mcp", cloudWithIdentity)
 	mux.Handle("DELETE /mcp", cloudWithIdentity)
 	mux.Handle("POST /mcp/message", cloudWithIdentity)
-	results := http.FileServer(http.Dir(cfg.DataDir))
-	mux.Handle("GET /results/", http.StripPrefix("/results/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Never expose directory listings of other tasks' preview links.
-		rel := strings.TrimPrefix(r.URL.Path, "/")
-		if rel == "" {
-			rel = "."
-		}
-		info, err := fs.Stat(os.DirFS(cfg.DataDir), strings.TrimSuffix(rel, "/"))
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		if info.IsDir() {
-			if _, err := fs.Stat(os.DirFS(cfg.DataDir), filepath.ToSlash(filepath.Join(rel, "index.html"))); err != nil {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'none'; form-action 'none'")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		results.ServeHTTP(w, r)
-	})))
+	mux.Handle("GET /preview-assets/", http.StripPrefix("/preview-assets/", previewAssets()))
+	mux.Handle("GET /results/", http.StripPrefix("/results/", resultHandler(cfg)))
 	if cfg.DevTools {
 		assets, err := fs.Sub(devUI, "devui")
 		if err != nil {
@@ -317,7 +294,15 @@ func displayEvents(c *session.Controller) http.Handler {
 			taskFailure(w, err)
 			return
 		}
-		observation, err := c.Observe(r.Context(), ref, r.Header.Get("Last-Event-ID"))
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		after := r.Header.Get("Last-Event-ID")
+		if after == "" {
+			after = r.URL.Query().Get("after")
+		}
+		observation, err := c.Observe(r.Context(), ref, after)
 		if err != nil {
 			taskFailure(w, err)
 			return
@@ -339,13 +324,10 @@ func displayEvents(c *session.Controller) http.Handler {
 			"taskRef":   ref,
 			"sessionId": snapshot.SessionID,
 			"runtime":   d.Runtime,
+			"title":     d.Title,
 			"source":    "AgentAPI session event stream",
 		}); err != nil {
 			return
-		}
-		after := r.Header.Get("Last-Event-ID")
-		if after == "" {
-			after = r.URL.Query().Get("after")
 		}
 		err = observation.Run(after, func(f events.Frame) error {
 			return writeDisplayEvent(w, rc, "session-event", f.ID, f.Data)

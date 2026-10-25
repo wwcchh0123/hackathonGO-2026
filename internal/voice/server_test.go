@@ -156,6 +156,7 @@ func TestBrowserToCloudVoiceRoundTrip(t *testing.T) {
 	browser.Write(ctx, websocket.MessageBinary, make([]byte, 1920))
 	browser.Write(ctx, websocket.MessageText, []byte(`{"type":"stop"}`))
 	var stt, tts, audio bool
+	var speechTurn uint64
 	for {
 		typ, b := read()
 		if typ == websocket.MessageBinary {
@@ -164,6 +165,13 @@ func TestBrowserToCloudVoiceRoundTrip(t *testing.T) {
 		}
 		var m linx.Message
 		json.Unmarshal(b, &m)
+		if m.Type == "tts" && m.State == "start" {
+			var event struct {
+				Turn uint64 `json:"turn_id"`
+			}
+			json.Unmarshal(b, &event)
+			speechTurn = event.Turn
+		}
 		if m.Type == "stt" && m.Text == "你好" {
 			stt = true
 		}
@@ -176,6 +184,20 @@ func TestBrowserToCloudVoiceRoundTrip(t *testing.T) {
 	}
 	if !stt || !tts || !audio {
 		t.Fatal("incomplete voice round trip")
+	}
+	if speechTurn == 0 {
+		t.Fatal("missing presentation generation")
+	}
+	browser.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf(`{"type":"playback","turn_id":%d,"state":"playing","level":0.6,"text":"连接成功"}`, speechTurn)))
+	deadline := time.Now().Add(time.Second)
+	for s.stage.snapshot().Phase != "speaking" {
+		if time.Now().After(deadline) {
+			t.Fatal("playback feedback did not reach screen after cloud TTS stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if p := s.stage.snapshot(); p.UserText != "你好" || p.Text != "连接成功" {
+		t.Fatalf("lost presentation text: %+v", p)
 	}
 	browser.Write(ctx, websocket.MessageText, []byte(`{"type":"abort"}`))
 	typ, b := read()

@@ -1,8 +1,11 @@
+import { playbackAt } from './playback.mjs';
 const $ = id => document.getElementById(id);
 let ws, audio, mic, source, filter, stream, timer;
 let ready = false, recording = false, stopping = false, preparing = false;
 let outputRate = 24000, nextPlay = 0, ttsStopped = true, stopResolve;
 const playing = new Set();
+let speechFrames = [], playbackTurn = 0, spokenText = '', lastPlaybackReport = '';
+let visualLead = 120;
 
 function error(text = '') { $('error').textContent = text; $('error').hidden = !text; }
 function state(text, kind = '') {
@@ -26,6 +29,7 @@ function message(label, text, kind = '') {
 function clearPlayback() {
   for (const node of playing) { node.onended = null; try { node.stop(); } catch {} }
   playing.clear(); nextPlay = 0; ttsStopped = true;
+  speechFrames = []; playbackTurn = 0; spokenText = ''; lastPlaybackReport = '';
 }
 function releaseMic() {
   clearTimeout(timer);
@@ -53,7 +57,8 @@ function play(data) {
   const values = buffer.getChannelData(0);
   for (let i = 0; i < values.length; i++) values[i] = pcm.getInt16(i * 2, true) / 32768;
   const node = audio.createBufferSource(); node.buffer = buffer; node.connect(audio.destination);
-  nextPlay = Math.max(nextPlay, audio.currentTime + 0.04);
+  nextPlay = Math.max(nextPlay, audio.currentTime + 0.04 + visualLead / 1000);
+  speechFrames.push({start: nextPlay, end: nextPlay + buffer.duration, rate: outputRate, samples: values, text: spokenText});
   playing.add(node);
   node.onended = () => { playing.delete(node); if (ttsStopped && !playing.size && !recording) state('已连接 · 等你说话'); };
   node.start(nextPlay); nextPlay += buffer.duration;
@@ -87,14 +92,14 @@ async function connect() {
         const m = JSON.parse(data);
         if (m.type === 'ready') {
           ready = true; outputRate = m.sample_rate; $('activation').hidden = true;
-          state('已连接 · 等你说话'); $('hint').textContent = '点击开始说话，说完点击发送。'; controls();
+          state('已连接 · 等你说话'); $('hint').textContent = '点击开始说话，说完点击发送。'; controls(); wakeDisplay();
         } else if (m.type === 'activation') {
           $('activation').hidden = false; $('code').textContent = m.code; state('等待设备绑定');
         } else if (m.type === 'stt') message('你', m.text, 'user');
         else if (m.type === 'tts') {
           if (recording || preparing || stopping) return;
-          if (m.state === 'start') { ttsStopped = false; state('智能体正在说话', 'speaking'); }
-          if (m.state === 'sentence_start' && m.text) message('灵矽', m.text);
+          if (m.state === 'start') { clearPlayback(); playbackTurn = m.turn_id || 0; ttsStopped = false; state('智能体正在说话', 'speaking'); }
+          if (m.state === 'sentence_start' && m.text) { spokenText = m.text; message('灵矽', m.text); }
           if (m.state === 'stop') {
             ttsStopped = true;
             if (m.is_aborted) clearPlayback();
@@ -138,6 +143,7 @@ async function start() {
     };
     mic.onprocessorerror = () => { error('录音处理失败，请重新连接。'); socket.close(); releaseMic(); };
     send({ type: 'start' }); recording = true;
+    wakeDisplay();
     source.connect(filter); filter.connect(mic); mic.connect(audio.destination);
     mic.port.postMessage('start');
     state('正在录音 · 说完点击发送', 'recording');
@@ -168,6 +174,32 @@ $('connect').onclick = connect;
 $('record').onclick = () => recording ? stop() : start();
 $('interrupt').onclick = () => { try { send({ type: 'abort' }); clearPlayback(); state('已停止播报 · 可以继续说话'); } catch (e) { error(e.message); } };
 $('clear').onclick = () => { $('messages').replaceChildren(); };
+async function wakeDisplay() {
+  try {
+    const response = await fetch('/api/stage/wake', {method: 'POST'});
+    if (!response.ok) throw new Error(await response.text());
+    $('stage-status').textContent = '小灵已准备好 · 打开人物预览可查看画面';
+  } catch (e) { $('stage-status').textContent = `画面唤醒失败：${e.message}`; }
+}
+$('focus-avatar').onclick = async () => {
+  try {
+    const response = await fetch('/api/stage/view', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:''})});
+    if (!response.ok) throw new Error('无法切换人物画面');
+    await wakeDisplay();
+  } catch (e) { $('stage-status').textContent = e.message; }
+};
+$('visual-lead').oninput = () => {
+  visualLead = Math.max(0, Math.min(400, Number($('visual-lead').value) || 0));
+  $('lead-value').textContent = `${visualLead} ms`;
+};
+setInterval(() => {
+  if (!ready || !playbackTurn || !audio || recording || preparing || stopping || ws?.readyState !== WebSocket.OPEN || ws.bufferedAmount > 4096) return;
+  speechFrames = speechFrames.filter(f => f.end >= audio.currentTime - .3);
+  const report = audio.state === 'running' ? playbackAt(speechFrames, audio.currentTime + visualLead / 1000, ttsStopped) : {state:'buffering',level:0,text:''};
+  report.level = Math.round(report.level * 100) / 100;
+  const data = JSON.stringify({type:'playback',turn_id:playbackTurn,...report});
+  if (data !== lastPlaybackReport) { ws.send(data); lastPlaybackReport = data; }
+}, 80);
 window.addEventListener('pagehide', () => { releaseMic(); ws?.close(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden && recording) stop(); });
 setInterval(poll, 3000); poll();

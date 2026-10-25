@@ -19,7 +19,7 @@ jobs:
       - name: Verify voice codec and browser audio
         run: |
           make voice-test voice-build
-          node --test internal/voice/test/pcm.test.mjs
+          node --test internal/voice/test/*.test.mjs
       - name: Generate coverage report
         run: make coverage
       - name: Retain coverage evidence

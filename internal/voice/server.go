@@ -34,14 +34,17 @@ type Status struct {
 }
 
 type Server struct {
-	Gateway        linx.Gateway
-	Dialer         linx.Dialer
-	Codec          voicecodec.Factory
-	AudioAvailable bool
-	Logf           func(string, ...any)
-	mu             sync.Mutex
-	status         Status
-	busy           atomic.Bool
+	Gateway             linx.Gateway
+	Dialer              linx.Dialer
+	Codec               voicecodec.Factory
+	AudioAvailable      bool
+	Logf                func(string, ...any)
+	DisplayAllowedHosts []string
+	DisplayWakeURL      string
+	stage               stageHub
+	mu                  sync.Mutex
+	status              Status
+	busy                atomic.Bool
 }
 
 func (s *Server) setStatus(stage, code, message string) {
@@ -82,6 +85,13 @@ func (s *Server) Handler() http.Handler {
 		json.NewEncoder(w).Encode(status)
 	})
 	mux.HandleFunc("GET /api/voice", s.handleVoice)
+	mux.HandleFunc("GET /api/stage/events", s.stageEvents)
+	mux.HandleFunc("GET /api/stage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.stage.snapshot())
+	})
+	mux.HandleFunc("POST /api/stage/view", s.stageView)
+	mux.HandleFunc("POST /api/stage/wake", s.wakeDisplay)
 	sub, _ := fs.Sub(assets, "ui")
 	mux.Handle("GET /", http.FileServer(http.FS(sub)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,14 +107,18 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		if strings.HasPrefix(r.URL.Path, "/stage/") {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; frame-src http: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		}
 		w.Header().Set("Permissions-Policy", "microphone=(self), camera=()")
 		mux.ServeHTTP(w, r)
 	})
 }
 
 type peer struct {
-	ws *websocket.Conn
-	mu sync.Mutex
+	ws    *websocket.Conn
+	mu    sync.Mutex
+	stage *stageHub
 }
 
 func (p *peer) write(ctx context.Context, typ websocket.MessageType, data []byte) error {
@@ -143,7 +157,8 @@ func (s *Server) handleVoice(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.CloseNow()
 	ws.SetReadLimit(32768)
-	p := &peer{ws: ws}
+	p := &peer{ws: ws, stage: &s.stage}
+	defer s.stage.reset("offline", false)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	// Read immediately, including while waiting for activation, so a closed tab
@@ -214,6 +229,7 @@ func (s *Server) bridge(ctx context.Context, p *peer, in <-chan packet) error {
 		return err
 	}
 	defer decoder.Close()
+	s.stage.reset("idle", true)
 	if err = p.event(ctx, map[string]any{"type": "ready", "session_id": cloud.SessionID, "sample_rate": cloud.Audio.SampleRate, "input_sample_rate": 16000, "frame_samples": 960}); err != nil {
 		return err
 	}
@@ -268,12 +284,18 @@ func upload(ctx context.Context, p *peer, cloud *linx.Connection, codec voicecod
 				continue
 			}
 			var command struct {
-				Type string `json:"type"`
+				Type  string  `json:"type"`
+				State string  `json:"state"`
+				Turn  uint64  `json:"turn_id"`
+				Level float64 `json:"level"`
+				Text  string  `json:"text"`
 			}
 			if json.Unmarshal(frame.data, &command) != nil {
 				return errors.New("invalid microphone command")
 			}
 			switch command.Type {
+			case "playback":
+				p.stage.playback(command.Turn, command.State, command.Level, command.Text)
 			case "start":
 				if recording.Load() {
 					return errors.New("recording already started")
@@ -289,6 +311,7 @@ func upload(ctx context.Context, p *peer, cloud *linx.Connection, codec voicecod
 				}
 				recording.Store(true)
 				suppress.Store(true)
+				p.stage.reset("listening", true)
 				if err = cloud.Send(ctx, linx.Message{Type: "abort", Reason: "wake_word_detected"}); err != nil {
 					return errors.New("could not interrupt speech")
 				}
@@ -301,11 +324,13 @@ func upload(ctx context.Context, p *peer, cloud *linx.Connection, codec voicecod
 				}
 				recording.Store(false)
 				suppress.Store(false)
+				p.stage.update(func(s *Presentation) { s.Phase = "thinking" })
 				if err := cloud.Send(ctx, linx.Message{Type: "listen", State: "stop", Mode: "manual"}); err != nil {
 					return errors.New("could not stop listening")
 				}
 			case "abort":
 				suppress.Store(true)
+				p.stage.reset("idle", true)
 				if err := cloud.Send(ctx, linx.Message{Type: "abort", Reason: "wake_word_detected"}); err != nil {
 					return errors.New("could not interrupt speech")
 				}
@@ -317,6 +342,7 @@ func upload(ctx context.Context, p *peer, cloud *linx.Connection, codec voicecod
 }
 
 func download(ctx context.Context, p *peer, cloud *linx.Connection, decoder voicecodec.Decoder, recording, suppress *atomic.Bool) error {
+	var turn uint64
 	for {
 		typ, data, err := cloud.Socket.Read(ctx)
 		if err != nil {
@@ -345,17 +371,28 @@ func download(ctx context.Context, p *peer, cloud *linx.Connection, decoder voic
 				continue
 			}
 			if msg.State == "start" {
+				turn = p.stage.update(func(s *Presentation) {
+					s.Turn++
+					s.Phase, s.Text, s.Level = "thinking", "", 0
+				}).Turn
 				if err = decoder.Reset(); err != nil {
 					return err
 				}
 			}
 			if msg.IsAborted {
 				suppress.Store(true)
+				p.stage.reset("idle", true)
 			}
-			if err = p.event(ctx, msg); err != nil {
+			if err = p.event(ctx, struct {
+				linx.Message
+				Turn uint64 `json:"turn_id"`
+			}{msg, turn}); err != nil {
 				return err
 			}
 		case "stt", "notify":
+			if msg.Type == "stt" {
+				p.stage.update(func(s *Presentation) { s.UserText = boundedText(msg.Text) })
+			}
 			if err = p.event(ctx, msg); err != nil {
 				return err
 			}

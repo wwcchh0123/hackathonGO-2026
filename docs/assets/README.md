@@ -8,3 +8,5 @@
 - SHA-256：`48c43fcd5ba71eb93a482fc1d9db4a9eff9f38cabd5e30d67723b20f1068d5f1`。
 
 资源随本仓库分发，渲染不需要访问相邻的 CodeAgent 工作区，也不依赖在线图片服务。
+
+`fenno-air-wordmark.svg` 和 `fenno-air-wordmark-dark.svg` 是 README 使用的浅色/深色主题字标，保留可读取的 `Fenno Air` 文本和替代文字，以系统字体渲染。README 使用 GitHub 的 `#gh-light-mode-only` / `#gh-dark-mode-only` 主题标记选择对应版本，避免 h1 自带的底边框。两份字标仅文字颜色不同，狐狸图形保持原样。

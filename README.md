@@ -4,7 +4,10 @@
   <img src="docs/assets/fenno.svg" width="120" height="120" alt="Fenno 蓝色狐狸标志" />
 </p>
 
-<h1 align="center">Fenno Air</h1>
+<p align="center">
+  <a href="docs/assets/fenno-air-wordmark.svg#gh-light-mode-only"><img src="docs/assets/fenno-air-wordmark.svg" width="224" height="52" alt="Fenno Air" /></a>
+  <a href="docs/assets/fenno-air-wordmark-dark.svg#gh-dark-mode-only"><img src="docs/assets/fenno-air-wordmark-dark.svg" width="224" height="52" alt="Fenno Air" /></a>
+</p>
 
 <br />
 

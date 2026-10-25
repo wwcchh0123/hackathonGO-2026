@@ -16,6 +16,10 @@ jobs:
       - name: Install voice codec dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev pkg-config
       - run: make check test build
+      - name: Verify real browser DOM and iframe interaction
+        env:
+          LINXI_BROWSER_TEST_BIN: /usr/bin/google-chrome
+        run: go test ./cmd/device-display -run TestBrowserDOMWithChromium -v
       - name: Verify voice codec and browser audio
         run: |
           make voice-test voice-build

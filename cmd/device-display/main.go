@@ -177,6 +177,18 @@ func (r *runtime) ScrollScreen(ctx context.Context, direction string, pages int)
 	return r.browser.Scroll(ctx, direction, pages)
 }
 
+func (r *runtime) CaptureScreen(ctx context.Context) (devicecontrol.BrowserCapture, error) {
+	return r.browser.Capture(ctx)
+}
+
+func (r *runtime) InspectBrowser(ctx context.Context) (devicecontrol.BrowserInspection, error) {
+	return r.browser.Inspect(ctx)
+}
+
+func (r *runtime) ClickBrowser(ctx context.Context, elementID string) error {
+	return r.browser.Click(ctx, elementID)
+}
+
 func (r *runtime) StopCast(context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -189,15 +201,18 @@ func (r *runtime) StopCast(context.Context) error {
 }
 
 type browser struct {
-	mu        sync.Mutex
-	binary    string
-	userAgent string
-	width     int
-	height    int
-	debugPort int
-	url       string
-	cancel    context.CancelFunc
-	done      <-chan struct{}
+	mu          sync.Mutex
+	binary      string
+	userAgent   string
+	width       int
+	height      int
+	debugPort   int
+	url         string
+	cancel      context.CancelFunc
+	done        <-chan struct{}
+	elements    map[string]devtoolsTarget
+	actionMu    sync.Mutex // Serialize inspection IDs and clicks across MCP calls.
+	nextElement uint64
 }
 
 func (b *browser) Open(parent context.Context, rawURL string) error {
@@ -332,31 +347,6 @@ func (b *browser) Scroll(ctx context.Context, direction string, pages int) error
 		}
 		return nil
 	}
-}
-
-type devtoolsTarget struct {
-	Type                 string `json:"type"`
-	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-}
-
-func (b *browser) targets(ctx context.Context) ([]devtoolsTarget, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/json/list", b.debugPort), nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("浏览器调试接口返回 HTTP %d", response.StatusCode)
-	}
-	var targets []devtoolsTarget
-	if err := json.NewDecoder(response.Body).Decode(&targets); err != nil {
-		return nil, err
-	}
-	return targets, nil
 }
 
 func (b *browser) Stop() error {

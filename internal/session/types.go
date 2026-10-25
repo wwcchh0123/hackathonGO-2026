@@ -56,6 +56,7 @@ type ListOptions struct {
 	IncludeArchived bool   `json:"include_archived,omitempty"`
 	CreatedAfter    string `json:"created_after,omitempty"`
 	CreatedBefore   string `json:"created_before,omitempty"`
+	SkipSummary     bool   `json:"-"`
 }
 type TaskPage struct {
 	Data      []Task      `json:"data"`

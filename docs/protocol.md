@@ -131,10 +131,11 @@ location / {
 
 | 接口 | 用途 |
 | --- | --- |
-| GET /display/?task_ref=... | 1920×1080 深色大屏页面；只读取 URL 中指定任务 |
+| GET /display/sessions?limit=20 | 公开只读任务索引；只返回列表展示字段，不返回事件内容或凭据 |
+| GET /display/?task_ref=... | 1920×1080 深色大屏页面；有 task_ref 时选中指定任务，没有时自动选择最新任务 |
 | GET /display/events?task_ref=... | 先发送任务快照和页面元信息，再回放有界原始事件并持续推送 |
 
-展示页的 `task_ref` 只允许当前进程仍保留的任务引用。它不会提供任务切换、发送消息、预览下载或其他写操作；未知/过期引用返回 404。设备浏览器应直接使用 `display_url`，不要拼接内部 API 地址或附带控制令牌。多个任务的展示切换就是重新调用 `cast_screen` 并传入另一个任务的 `display_url`。
+展示页每 3 秒轮询一次 `/display/sessions`，所以页面打开后创建的新任务会自动出现在左侧列表。点击列表项只更新当前页面的 `task_ref` 并重建该任务的事件 SSE，不发送消息、不 interrupt、不改变灵矽对话的默认发送目标；设备也可以重新调用 `cast_screen` 投屏另一个任务的 `display_url`。展示页的 `task_ref` 只允许当前进程仍保留的任务引用；未知/过期引用的事件流返回 404。设备浏览器应直接使用 `display_url`，不要拼接内部 API 地址或附带控制令牌。
 
 设备 API 使用 Bearer 或 Cookie；浏览器 WebSocket/EventSource 用 Cookie，密钥不进入 URL。MCP 不接受 Cookie。快照中的 task_ref/session_id 只表示展示选择，command_id/command_state/error 表示该任务的本地控制结果；status 是最近查询或实时观察得到的云端状态，stop_reason 独立返回，summary_event_id/summary_time 保留摘录来源。
 

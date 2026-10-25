@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,6 +132,7 @@ func Handler(cfg config.Config, c *session.Controller) http.Handler {
 		}
 		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 	})
+	mux.Handle("GET /display/sessions", displaySessions(c))
 	mux.Handle("GET /display/events", displayEvents(c))
 	mux.Handle("GET /display/", http.StripPrefix("/display/", devicedisplay.StaticHandler()))
 
@@ -309,6 +311,61 @@ func displayEvents(c *session.Controller) http.Handler {
 			slog.Debug("public display stream closed", "task_ref", ref, "error", err)
 		}
 	})
+}
+
+// displaySessions exposes the minimal task index needed by the public kiosk.
+// The browser cannot carry CONTROL_TOKEN, so this endpoint is intentionally
+// separate from /api/tasks. It contains task references and presentation data,
+// while event contents remain behind the selected task's SSE stream.
+func displaySessions(c *session.Controller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := 20
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 50 {
+				failure(w, http.StatusBadRequest, "无效展示任务数量")
+				return
+			}
+			limit = parsed
+		}
+		page, err := c.ListTasks(r.Context(), session.ListOptions{Limit: limit, SkipSummary: true})
+		if err != nil {
+			taskFailure(w, err)
+			return
+		}
+		items := make([]displaySession, 0, len(page.Data))
+		for _, task := range page.Data {
+			items = append(items, displaySession{
+				TaskRef:   task.Ref,
+				SessionID: task.SessionID,
+				Title:     task.Title,
+				Status:    task.Status,
+				Runtime:   task.Runtime,
+				CreatedAt: task.CreatedAt,
+				UpdatedAt: task.UpdatedAt,
+				Archived:  task.Archived,
+			})
+		}
+		JSON(w, http.StatusOK, displaySessionPage{Data: items, HasMore: page.HasMore, NextPage: page.NextPage, QueriedAt: page.QueriedAt})
+	})
+}
+
+type displaySession struct {
+	TaskRef   string    `json:"task_ref"`
+	SessionID string    `json:"session_id,omitempty"`
+	Title     string    `json:"title"`
+	Status    string    `json:"status"`
+	Runtime   string    `json:"runtime,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Archived  bool      `json:"archived,omitempty"`
+}
+
+type displaySessionPage struct {
+	Data      []displaySession `json:"data"`
+	NextPage  string           `json:"next_page,omitempty"`
+	HasMore   bool             `json:"has_more"`
+	QueriedAt time.Time        `json:"queried_at"`
 }
 
 func displaySnapshot(d session.Detail) device.Snapshot {

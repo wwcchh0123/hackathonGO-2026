@@ -1,38 +1,469 @@
-// The page is intentionally a dependency-free kiosk view. It receives only
-// the local SSE stream, turns event types into visual cards, and never knows
-// the control-service token or how AgentAPI commands are executed.
+// Dependency-free kiosk renderer for the simulated Linxi device.
+//
+// The server exposes raw AgentAPI events over SSE. This page deliberately
+// performs a presentation pass before rendering them so transport details do
+// not become the user interface: status events update the header, thinking
+// becomes a compact disclosure row, and tool calls/results become a single
+// CodeAgent-style work block.
 const $ = (id) => document.getElementById(id);
-const state = { session: '', events: [], seen: new Set(), tools: new Map(), types: new Map(), last: null, total: 0 };
-const palette = { 'user.message':'#e7a6b7', 'agent.thinking':'#e7bd7c', 'agent.message':'#a9e7c1', 'agent.tool_use':'#7ed7d4', 'agent.tool_result':'#80b9bd', 'session.status_idle':'#7ed7d4' };
+const query = new URLSearchParams(window.location.search);
+const state = {
+  taskRef: query.get('task_ref') || '',
+  selectedTask: null,
+  sessions: new Map(),
+  events: [],
+  seen: new Set(),
+  source: null,
+  listBusy: false,
+  status: 'ready',
+  total: 0,
+  expanded: new Set(),
+  lastRenderAt: 0,
+};
 
-function esc(value = '') { return String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
-function textOf(event) { return (event.content || []).filter((part) => part && typeof part.text === 'string').map((part) => part.text).join('\n').trim(); }
-function short(value, length = 180) { return String(value || '').replace(/\s+/g, ' ').trim().slice(0, length); }
-function timeOf(value) { if (!value) return '--:--:--'; const date = new Date(value); return Number.isNaN(date.valueOf()) ? '--:--:--' : date.toLocaleTimeString('zh-CN',{hour12:false}); }
-function textHtml(value) { return esc(value).replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>'); }
-function parseInput(event) { try { const input = JSON.parse(event.input_json || '{}'); return input && typeof input === 'object' ? input : {}; } catch { return {}; } }
-function toolSummary(name, input) { return short(input.command || input.file_path || input.description || input.query || input.url || name, 120); }
-function labelFor(type) { type=String(type||'unknown'); return ({'user.message':'USER BRIEF','agent.thinking':'REASONING','agent.message':'AGENT MESSAGE','agent.tool_use':'TOOL CALL','agent.tool_result':'TOOL RESULT','session.status_running':'SESSION RUNNING','session.status_idle':'SESSION IDLE','span.model_request_end':'MODEL USAGE'})[type] || type.replaceAll('.',' / ').toUpperCase(); }
-function updateNow(title, detail, icon='✦') { $('now-title').textContent = title; $('now-detail').textContent = detail || ''; $('now-icon').textContent = icon; $('now-number').textContent = state.last?.sequence_number ? `#${state.last.sequence_number}` : '—'; }
-function setStatus(status) { const value = status === 'running' ? 'LIVE' : status === 'idle' ? 'DONE' : String(status || 'READY').toUpperCase(); $('status').textContent = value; $('state-value').textContent = value; $('status-pill').className = `pill ${status === 'running' ? 'live' : status === 'idle' ? 'done' : ''}`; }
-function resetView() { state.events=[]; state.seen.clear(); state.tools.clear(); state.types.clear(); state.last=null; $('timeline').innerHTML='<div id="empty" class="empty"><div class="orbit"></div><strong>Listening to the agent</strong><span>Session events will appear as they arrive.</span></div>'; $('event-mix').innerHTML='<span class="muted">Waiting for events…</span>'; $('event-count').textContent='0'; $('tool-count').textContent='0'; $('progress').textContent='0 events'; updateNow('Ready','The latest agent action will appear here.'); }
-function applySnapshot(snapshot) { $('session-id').textContent = snapshot.session_id ? snapshot.session_id.slice(0,18) : 'waiting'; $('session-long').textContent = snapshot.session_id || 'No active session'; setStatus(snapshot.status); if(snapshot.summary) $('session-title').textContent=short(snapshot.summary,55); if(snapshot.session_id) state.session=snapshot.session_id; }
-function applyMeta(meta) { state.total = Number(meta.eventCount || 0); $('runtime').textContent = meta.runtime === 'claudecode' ? 'Claude Code' : (meta.runtime || 'Agent runtime'); $('runtime-small').textContent = meta.runtime || '—'; $('source').textContent = meta.source || 'control service SSE'; $('airplay-target').textContent = meta.airplayTarget || 'configured target'; if(meta.sessionId) { state.session=meta.sessionId; $('session-id').textContent=meta.sessionId.slice(0,18); $('session-long').textContent=meta.sessionId; } if(meta.startedAt) $('time-range').textContent=`${timeOf(meta.startedAt)} — ${timeOf(meta.endedAt)}`; }
-function addMix(type) { state.types.set(type,(state.types.get(type)||0)+1); const rows=[...state.types.entries()].sort((a,b)=>b[1]-a[1]).slice(0,6); const max=Math.max(1,...rows.map(([,count])=>count)); $('event-mix').innerHTML=rows.map(([name,count])=>`<div class="mix-row"><span>${esc(labelFor(name))}</span><span class="mix-track"><i class="mix-fill" style="width:${count/max*100}%;--color:${palette[name]||'#829797'}"></i></span><span>${count}</span></div>`).join(''); }
-function eventShell(event, content, type = event.type) { const node=document.createElement('article'); node.className='event'; node.dataset.id=event.id||''; node.innerHTML=`<div class="event-head"><strong>${esc(labelFor(type))}</strong><time>${timeOf(event.processed_at||event.created_at)}</time></div>${content}`; $('timeline').querySelector('#empty')?.remove(); $('timeline').appendChild(node); $('timeline').scrollTop=$('timeline').scrollHeight; return node; }
-function addEvent(event) {
-  if(!event || typeof event !== 'object' || (event.id && state.seen.has(event.id))) return;
-  if(event.id) state.seen.add(event.id); state.events.push(event); state.last=event; addMix(event.type); $('event-count').textContent=String(state.events.length); $('progress').textContent=`${state.events.length} events`; $('meter-fill').style.width=`${Math.min(100,state.total ? state.events.length/state.total*100 : 100)}%`;
-  const content=textOf(event); let node;
-  if(event.type==='user.message') { node=eventShell(event,`<div class="event-card user"><div class="event-label">USER BRIEF</div><div class="event-body">${textHtml(content)}</div></div>`); updateNow('User brief',short(content),'◌'); }
-  else if(event.type==='agent.thinking') { node=eventShell(event,`<div class="event-card thinking"><div class="event-label">REASONING</div><div class="event-body">${textHtml(content)}</div></div>`); updateNow('Reasoning',short(content),'◌'); }
-  else if(event.type==='agent.message') { node=eventShell(event,`<div class="event-card message"><div class="event-label">AGENT</div><div class="event-body">${textHtml(content)}</div></div>`); updateNow('Agent response',short(content),'✦'); }
-  else if(event.type==='agent.tool_use') { const input=parseInput(event), name=event.name||event.tool_type||'tool'; const key=event.tool_use_id||event.id; node=eventShell(event,`<div class="event-card tool" data-tool="${esc(key)}"><div class="tool-row"><div class="tool-icon">›_</div><div class="tool-info"><div class="tool-name">${esc(name)}</div><div class="tool-summary">${esc(toolSummary(name,input))}</div></div><span class="tool-badge">RUNNING</span></div><div class="tool-output"></div></div>`); state.tools.set(key,node); $('tool-count').textContent=String(state.tools.size); updateNow(name,toolSummary(name,input),'›_'); }
-  else if(event.type==='agent.tool_result') { const key=event.tool_use_id, prior=state.tools.get(key); if(prior){ const badge=prior.querySelector('.tool-badge'); badge.textContent=event.is_error?'ERROR':'DONE'; badge.className=`tool-badge ${event.is_error?'':'done'}`; prior.querySelector('.tool-output').textContent=content || '(no output)'; } else node=eventShell(event,`<div class="event-card tool ${event.is_error?'error':''}"><div class="event-label">TOOL RESULT</div><div class="event-body">${textHtml(content)}</div></div>`); if(event.is_error) updateNow('Tool error',short(content),'!'); }
-  else if(event.type==='session.status_running'||event.type==='session.status_idle') { node=eventShell(event,`<div class="event-card status"><div class="event-label">${esc(labelFor(event.type))}</div><div class="event-body">${textHtml(content || (event.type.endsWith('idle')?'Session is idle':'Session is running'))}</div></div>`,event.type); setStatus(event.type.endsWith('idle')?'idle':'running'); updateNow(event.type.endsWith('idle')?'Session complete':'Session running',short(content || 'Streaming events'),'◉'); }
-  else if(event.type==='span.model_request_end') { const usage=event.model_usage||{}, byModel=event.model_usage_by_model||{}, model=Object.entries(byModel)[0]; if(model){ $('model').textContent=model[0]; const u=model[1]||{}; $('input').textContent=u.input_tokens??usage.input_tokens??'—'; $('output').textContent=u.output_tokens??usage.output_tokens??'—'; $('cache').textContent=u.cache_read_input_tokens??usage.cache_read_input_tokens??'—'; $('cost').textContent=Number.isFinite(u.cost_usd)?`$${u.cost_usd.toFixed(2)}`:'—'; } node=eventShell(event,`<div class="event-card status"><div class="event-label">MODEL USAGE</div><div class="event-body">${esc(`${usage.input_tokens||0} input · ${usage.output_tokens||0} output tokens`)}</div></div>`); updateNow('Model request complete','Token usage received','◒'); }
-  else node=eventShell(event,`<div class="event-card"><div class="event-label">${esc(labelFor(event.type))}</div><div class="event-body">${textHtml(content || JSON.stringify(event))}</div></div>`);
-  if(node){ const body=node.querySelector('.event-body'); if(body && content.length>500) body.addEventListener('click',()=>body.classList.toggle('expanded')); }
+function esc(value = '') {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }
-function connect() { const params=new URLSearchParams(window.location.search); const taskRef=params.get('task_ref')||''; const endpoint=params.get('events')||`./events?task_ref=${encodeURIComponent(taskRef)}`; const source=new EventSource(endpoint); source.addEventListener('device-snapshot',(e)=>applySnapshot(JSON.parse(e.data))); source.addEventListener('session-meta',(e)=>applyMeta(JSON.parse(e.data))); source.addEventListener('session-reset',()=>{resetView(); state.session='';}); source.addEventListener('session-event',(e)=>{try{addEvent(JSON.parse(e.data));}catch(error){console.error(error);}}); source.onopen=()=>{ $('connection').textContent='SSE connected'; $('stream-state').textContent='stream is live'; }; source.onerror=()=>{ $('connection').textContent='SSE reconnecting'; $('stream-state').textContent='reconnecting…'; }; }
-setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});},1000); $('clock').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false}); connect();
+
+function short(value, length = 180) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, length);
+}
+
+function timeOf(value) {
+  if (!value) return '--:--:--';
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? '--:--:--' : date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function ageOf(value) {
+  if (!value) return 'unknown time';
+  const date = new Date(value);
+  const seconds = Math.max(0, Math.floor((Date.now() - date.valueOf()) / 1000));
+  if (!Number.isFinite(seconds)) return 'unknown time';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+
+function textOf(event) {
+  if (typeof event?.text === 'string') return event.text.trim();
+  if (typeof event?.output === 'string') return event.output.trim();
+  if (typeof event?.content === 'string') return event.content.trim();
+  if (Array.isArray(event?.content)) {
+    return event.content
+      .filter((part) => part && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n')
+      .trim();
+  }
+  if (Array.isArray(event?.message?.content)) {
+    return event.message.content
+      .filter((part) => part && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n')
+      .trim();
+  }
+  return '';
+}
+
+function textHtml(value) {
+  return esc(value)
+    .replace(/```([\s\S]*?)```/g, '<pre>$1</pre>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n\n+/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+}
+
+function messageHtml(value) {
+  const lines = String(value || '').split('\n');
+  const blocks = [];
+  let paragraph = [];
+  let list = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(`<p>${textHtml(paragraph.join('\n'))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push(`<ul>${list.map((item) => `<li>${textHtml(item)}</li>`).join('')}</ul>`);
+    list = [];
+  };
+  for (const line of lines) {
+    const match = line.match(/^\s*[-*]\s+(.+)$/);
+    if (match) {
+      flushParagraph();
+      list.push(match[1]);
+    } else if (!line.trim()) {
+      flushParagraph();
+      flushList();
+    } else {
+      flushList();
+      paragraph.push(line);
+    }
+  }
+  flushParagraph();
+  flushList();
+  return blocks.join('');
+}
+
+function parseInput(event) {
+  if (event?.input && typeof event.input === 'object') return event.input;
+  if (typeof event?.input_json === 'string') {
+    try {
+      const input = JSON.parse(event.input_json);
+      return input && typeof input === 'object' ? input : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function toolName(event) {
+  return String(event?.name || event?.tool_name || event?.tool_type || 'tool');
+}
+
+function toolTarget(event) {
+  const input = parseInput(event);
+  return short(input.command || input.file_path || input.path || input.description || input.query || input.url || '', 110);
+}
+
+function taskTitle(task) {
+  return short(task?.title, 72) || `Session ${String(task?.task_ref || '').slice(-8)}`;
+}
+
+function taskStatus(status) {
+  return ({ running: 'RUNNING', rescheduling: 'QUEUED', idle: 'IDLE', terminated: 'STOPPED', creating: 'CREATING' })[String(status || '')] || String(status || 'UNKNOWN').toUpperCase();
+}
+
+function taskStatusClass(status) {
+  if (status === 'running' || status === 'rescheduling' || status === 'creating') return 'running';
+  if (status === 'terminated' || status === 'failed') return 'error';
+  return '';
+}
+
+function statusLabel(status) {
+  if (status === 'running' || status === 'rescheduling') return 'Working';
+  if (status === 'idle') return 'Worked';
+  if (status === 'terminated' || status === 'failed') return 'Stopped';
+  return 'Ready';
+}
+
+function setStatus(status) {
+  state.status = status || 'ready';
+  const running = state.status === 'running' || state.status === 'rescheduling';
+  const done = state.status === 'idle';
+  $('status').textContent = running ? 'WORKING' : done ? 'DONE' : String(state.status || 'READY').toUpperCase();
+  $('status-pill').className = `status-pill ${running ? 'live' : done ? 'done' : ''}`;
+  $('run-summary-label').textContent = statusLabel(state.status);
+}
+
+function updateURL(taskRef) {
+  const next = new URL(window.location.href);
+  if (taskRef) next.searchParams.set('task_ref', taskRef);
+  else next.searchParams.delete('task_ref');
+  window.history.replaceState({}, '', next);
+}
+
+function applySelectedTask() {
+  const task = state.selectedTask;
+  const title = task ? taskTitle(task) : state.taskRef ? `Session ${state.taskRef.slice(-8)}` : 'Choose a session';
+  $('stage-title').textContent = title;
+  $('session-id').textContent = task?.session_id ? task.session_id.slice(0, 18) : state.taskRef ? state.taskRef.slice(-18) : 'waiting';
+  $('runtime').textContent = task?.runtime === 'claudecode' ? 'Claude Code' : (task?.runtime || 'Agent runtime');
+  if (task) setStatus(task.status);
+  renderSessionList();
+}
+
+function resetView() {
+  state.events = [];
+  state.seen.clear();
+  state.total = 0;
+  state.expanded.clear();
+  $('timeline').innerHTML = '<div id="empty" class="empty-state"><div class="empty-icon">✦</div><strong>Listening to the agent</strong><span>Events will appear as this session runs.</span></div>';
+  $('event-count').textContent = '0';
+  $('run-summary-count').textContent = '0 steps';
+  $('time-range').textContent = '—';
+  setStatus(state.selectedTask?.status || 'ready');
+}
+
+function renderSessionList() {
+  const tasks = [...state.sessions.values()];
+  const live = tasks.filter((task) => task.status === 'running' || task.status === 'rescheduling').length;
+  $('session-list-count').textContent = `${tasks.length}${live ? ` · ${live} live` : ''}`;
+  const list = $('session-list');
+  if (!tasks.length) {
+    list.innerHTML = '<div class="list-empty"><span class="list-empty-mark">◌</span><strong>No sessions yet</strong><span>New tasks will appear here.</span></div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const task of tasks) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `session-item ${task.task_ref === state.taskRef ? 'selected' : ''}`;
+    const statusClass = taskStatusClass(task.status);
+    button.innerHTML = `<div class="session-item-head"><strong class="session-item-title">${esc(taskTitle(task))}</strong><span class="session-item-status ${statusClass}"><i></i>${esc(taskStatus(task.status))}</span></div><span class="session-item-summary">${esc(task.runtime || 'Agent session')} · ${esc(ageOf(task.updated_at))}</span><div class="session-item-meta"><code>${esc(task.task_ref)}</code><time>${esc(timeOf(task.created_at))}</time></div>`;
+    button.addEventListener('click', () => selectTask(task.task_ref));
+    list.appendChild(button);
+  }
+}
+
+function showListError(error) {
+  $('session-sync').textContent = 'index unavailable';
+  if (!state.sessions.size) $('session-list').innerHTML = `<div class="list-error">Could not refresh sessions.<br>${esc(short(error?.message || 'control service unavailable', 120))}</div>`;
+}
+
+async function refreshSessions() {
+  if (state.listBusy) return;
+  state.listBusy = true;
+  try {
+    const response = await fetch('./sessions?limit=20', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const page = await response.json();
+    state.sessions = new Map((page.data || []).map((task) => [task.task_ref, task]));
+    $('session-sync').textContent = `updated ${timeOf(page.queried_at)}`;
+    if (state.taskRef && state.sessions.has(state.taskRef)) {
+      state.selectedTask = state.sessions.get(state.taskRef);
+    } else if (!state.taskRef && page.data?.length) {
+      selectTask(page.data[0].task_ref);
+      return;
+    } else if (state.taskRef && !state.sessions.has(state.taskRef) && page.data?.length) {
+      selectTask(page.data[0].task_ref);
+      return;
+    }
+    applySelectedTask();
+  } catch (error) {
+    showListError(error);
+  } finally {
+    state.listBusy = false;
+  }
+}
+
+function selectTask(taskRef) {
+  if (!taskRef) return;
+  const changed = state.taskRef !== taskRef;
+  state.taskRef = taskRef;
+  state.selectedTask = state.sessions.get(taskRef) || state.selectedTask;
+  updateURL(taskRef);
+  renderSessionList();
+  if (!changed) {
+    applySelectedTask();
+    return;
+  }
+  state.source?.close();
+  state.source = null;
+  resetView();
+  applySelectedTask();
+  connectEvents(taskRef);
+}
+
+function makeToolRecord(event) {
+  return {
+    id: event.tool_use_id || event.id || `tool-${Math.random()}`,
+    event,
+    result: null,
+  };
+}
+
+function normalizeSegments() {
+  const toolRecords = new Map();
+  for (const event of state.events) {
+    if (event.type === 'agent.tool_use') toolRecords.set(event.tool_use_id || event.id, makeToolRecord(event));
+  }
+  const segments = [];
+  let current = null;
+  const flush = () => { if (current) segments.push(current); current = null; };
+  for (const event of state.events) {
+    if (event.type === 'session.status_idle' || event.type === 'session.status_running' || event.type === 'session.status_rescheduled' || event.type === 'session.status_terminated' || event.type === 'session.created' || event.type.startsWith('span.')) continue;
+    if (event.type === 'agent.tool_result') {
+      const record = toolRecords.get(event.tool_use_id);
+      if (record) { record.result = event; continue; }
+      if (!current || current.type !== 'work') { flush(); current = { type: 'work', items: [] }; }
+      current.items.push({ event, result: event });
+      continue;
+    }
+    if (event.type === 'agent.tool_use') {
+      if (!current || current.type !== 'work') { flush(); current = { type: 'work', items: [] }; }
+      const record = toolRecords.get(event.tool_use_id || event.id) || makeToolRecord(event);
+      current.items.push(record);
+      continue;
+    }
+    if (event.type === 'agent.thinking') {
+      if (!current || current.type !== 'reasoning') { flush(); current = { type: 'reasoning', events: [] }; }
+      current.events.push(event);
+      continue;
+    }
+    if (event.type === 'user.message') { flush(); segments.push({ type: 'user', event }); continue; }
+    if (event.type === 'agent.message') { flush(); segments.push({ type: 'message', event }); continue; }
+    if (textOf(event)) { flush(); segments.push({ type: 'unknown', event }); }
+  }
+  flush();
+  return segments;
+}
+
+function iconForTool(name) {
+  const normalized = name.toLowerCase();
+  if (normalized.includes('bash') || normalized.includes('command') || normalized.includes('shell')) return '›_';
+  if (normalized.includes('read') || normalized.includes('search') || normalized.includes('grep')) return '⌕';
+  if (normalized.includes('write') || normalized.includes('edit') || normalized.includes('patch')) return '✎';
+  return '✦';
+}
+
+function workItemTitle(record) {
+  const event = record.event;
+  const name = toolName(event);
+  const target = toolTarget(event);
+  const normalized = name.toLowerCase();
+  let verb = 'Used';
+  if (normalized.includes('bash') || normalized.includes('command') || normalized.includes('shell')) verb = record.result ? 'Ran' : 'Running';
+  else if (normalized.includes('read') || normalized.includes('search') || normalized.includes('grep')) verb = record.result ? 'Read' : 'Reading';
+  else if (normalized.includes('write')) verb = record.result ? 'Wrote' : 'Writing';
+  else if (normalized.includes('edit') || normalized.includes('patch')) verb = record.result ? 'Edited' : 'Editing';
+  else if (!record.result) verb = 'Using';
+  return `${verb} ${target || name}`;
+}
+
+function workTitle(items) {
+  const usable = items.filter((item) => item.event?.type === 'agent.tool_use');
+  if (usable.length === 1) return workItemTitle(usable[0]);
+  const names = usable.map((item) => toolName(item.event).toLowerCase());
+  if (names.length && names.every((name) => name.includes('bash') || name.includes('command') || name.includes('shell'))) return `Ran ${names.length} commands`;
+  if (names.length && names.every((name) => name.includes('read') || name.includes('search') || name.includes('grep'))) return 'Loaded context';
+  return `Used ${items.length} tools`;
+}
+
+function workProgress(items) {
+  const finished = items.filter((item) => item.result && !item.result.is_error).length;
+  const failed = items.filter((item) => item.result?.is_error).length;
+  const running = items.length - finished - failed;
+  if (failed) return `${failed} failed`;
+  if (running) return `${finished ? `${finished} done · ` : ''}${running} running`;
+  return `${finished} done`;
+}
+
+function workStatus(items) {
+  if (items.some((item) => item.result?.is_error)) return 'error';
+  if (items.some((item) => !item.result)) return 'running';
+  return 'done';
+}
+
+function renderReasoning(segment, index) {
+  const id = `reasoning-${index}`;
+  const content = segment.events.map(textOf).filter(Boolean).join('\n\n');
+  const preview = short(content.split('\n').find(Boolean) || 'about next steps', 90);
+  const expanded = state.expanded.has(id);
+  return `<article class="timeline-item work-block reasoning-block ${expanded ? 'expanded' : ''}" data-expand-id="${id}"><button class="work-header" type="button" aria-expanded="${expanded}"><span class="work-chevron">›</span><span class="work-icon">✦</span><span class="work-title">Reasoned</span><span class="reasoning-preview">${esc(preview)}</span><span class="work-progress">${segment.events.length} done</span><span class="work-status">✓</span></button><div class="work-detail"><div class="reasoning-detail">${textHtml(content)}</div></div></article>`;
+}
+
+function renderWork(segment, index) {
+  const id = `work-${index}`;
+  const status = workStatus(segment.items);
+  const expanded = state.expanded.has(id) || status === 'running' || status === 'error';
+  const items = segment.items.map((item) => {
+    const result = item.result;
+    const output = result ? textOf(result) : '';
+    const check = result ? (result.is_error ? '!' : '✓') : '·';
+    const checkClass = result?.is_error ? ' error' : '';
+    return `<div class="work-item"><span class="work-item-icon">${esc(iconForTool(toolName(item.event)))}</span><span class="work-item-copy"><span class="work-item-title">${esc(workItemTitle(item))}</span>${output ? `<span class="work-item-output">${esc(output)}</span>` : ''}</span><span class="work-item-check${checkClass}">${check}</span></div>`;
+  }).join('');
+  return `<article class="timeline-item work-block ${expanded ? 'expanded' : ''}" data-expand-id="${id}"><button class="work-header" type="button" aria-expanded="${expanded}"><span class="work-chevron">›</span><span class="work-icon">${esc(iconForTool(toolName(segment.items[0]?.event || {})))}</span><span class="work-title">${esc(workTitle(segment.items))}</span><span class="work-progress">${esc(workProgress(segment.items))}</span><span class="work-status ${status}">${status === 'done' ? '✓' : status === 'error' ? '!' : '…'}</span></button><div class="work-detail">${items}</div></article>`;
+}
+
+function renderSegment(segment, index) {
+  if (segment.type === 'user') {
+    const content = textOf(segment.event);
+    return `<article class="timeline-item user-row"><div class="user-message"><div class="message-meta">You · ${esc(timeOf(segment.event.processed_at || segment.event.created_at))}</div>${messageHtml(content)}</div></article>`;
+  }
+  if (segment.type === 'message') return `<article class="timeline-item agent-message">${messageHtml(textOf(segment.event))}</article>`;
+  if (segment.type === 'reasoning') return renderReasoning(segment, index);
+  if (segment.type === 'work') return renderWork(segment, index);
+  return `<article class="timeline-item unknown-item">${messageHtml(textOf(segment.event))}</article>`;
+}
+
+function renderTimeline() {
+  const segments = normalizeSegments();
+  const container = $('timeline');
+  const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  if (!segments.length) {
+    container.innerHTML = '<div id="empty" class="empty-state"><div class="empty-icon">✦</div><strong>Listening to the agent</strong><span>Events will appear as this session runs.</span></div>';
+  } else {
+    container.innerHTML = segments.map(renderSegment).join('');
+    container.querySelectorAll('[data-expand-id] .work-header').forEach((button) => {
+      button.addEventListener('click', () => {
+        const block = button.closest('[data-expand-id]');
+        const id = block.dataset.expandId;
+        if (state.expanded.has(id)) state.expanded.delete(id); else state.expanded.add(id);
+        renderTimeline();
+      });
+    });
+  }
+  $('event-count').textContent = String(segments.length);
+  $('run-summary-count').textContent = `${segments.length} ${segments.length === 1 ? 'step' : 'steps'}`;
+  if (wasAtBottom || state.lastRenderAt === 0) container.scrollTop = container.scrollHeight;
+  state.lastRenderAt = Date.now();
+}
+
+function applySnapshot(snapshot) {
+  if (snapshot.status) {
+    setStatus(snapshot.status);
+    if (state.selectedTask) state.selectedTask = { ...state.selectedTask, status: snapshot.status };
+  }
+  if (snapshot.session_id) $('session-id').textContent = snapshot.session_id.slice(0, 18);
+  if (snapshot.started_at) $('time-range').textContent = `${timeOf(snapshot.started_at)} — ${timeOf(snapshot.ended_at)}`;
+}
+
+function applyMeta(meta) {
+  state.total = Number(meta.eventCount || 0);
+  $('runtime').textContent = meta.runtime === 'claudecode' ? 'Claude Code' : (meta.runtime || 'Agent runtime');
+  $('source').textContent = meta.source || 'AgentAPI session events';
+  if (meta.sessionId) $('session-id').textContent = meta.sessionId.slice(0, 18);
+  if (meta.startedAt) $('time-range').textContent = `${timeOf(meta.startedAt)} — ${timeOf(meta.endedAt)}`;
+}
+
+function addEvent(event) {
+  if (!event || typeof event !== 'object' || (event.id && state.seen.has(event.id))) return;
+  if (event.id) state.seen.add(event.id);
+  state.events.push(event);
+  if (event.type === 'session.status_running' || event.type === 'session.status_rescheduled') setStatus('running');
+  if (event.type === 'session.status_idle') setStatus('idle');
+  if (event.type === 'session.status_terminated') setStatus('terminated');
+  renderTimeline();
+}
+
+function connectEvents(taskRef) {
+  if (!taskRef) return;
+  const source = new EventSource(`./events?task_ref=${encodeURIComponent(taskRef)}`);
+  state.source = source;
+  source.addEventListener('device-snapshot', (event) => { if (state.taskRef === taskRef) applySnapshot(JSON.parse(event.data)); });
+  source.addEventListener('session-meta', (event) => { if (state.taskRef === taskRef) applyMeta(JSON.parse(event.data)); });
+  source.addEventListener('session-event', (event) => { if (state.taskRef === taskRef) { try { addEvent(JSON.parse(event.data)); } catch (error) { console.error(error); } } });
+  source.onopen = () => {
+    if (state.taskRef !== taskRef) return;
+    $('connection').textContent = 'SSE connected';
+    $('sidebar-connection').textContent = 'connected';
+  };
+  source.onerror = () => {
+    if (state.taskRef !== taskRef) return;
+    $('connection').textContent = 'SSE reconnecting';
+    $('sidebar-connection').textContent = 'reconnecting';
+  };
+}
+
+function boot() {
+  resetView();
+  if (state.taskRef) { applySelectedTask(); connectEvents(state.taskRef); }
+  refreshSessions();
+  window.setInterval(() => { if (!document.hidden) refreshSessions(); }, 3000);
+}
+
+window.setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }, 1000);
+$('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+boot();

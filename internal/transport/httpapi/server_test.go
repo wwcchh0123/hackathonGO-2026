@@ -437,7 +437,7 @@ func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
 	}
 	pageBody, _ := io.ReadAll(page.Body)
 	page.Body.Close()
-	if page.StatusCode != http.StatusOK || !strings.Contains(string(pageBody), "Agent Observatory") {
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(pageBody), "CodeAgent") {
 		t.Fatalf("display page: %d %s", page.StatusCode, pageBody)
 	}
 
@@ -452,5 +452,45 @@ func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
 	line, err := bufio.NewReader(stream.Body).ReadString('\n')
 	if err != nil || line != "event: device-snapshot\n" {
 		t.Fatalf("display snapshot: %q (%v)", line, err)
+	}
+}
+
+func TestPublicDisplaySessionListIsReadOnlyAndUnprotected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mock := agentapi.NewMock(ctx)
+	mock.Step = time.Millisecond
+	c := session.New(ctx, mock, device.NewState("test-device"), &artifacts.Store{Root: t.TempDir()})
+	defer func() {
+		cancel()
+		c.Wait()
+	}()
+	first, err := c.Submit(session.Command{Action: "start", Prompt: "整理发布说明"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Submit(session.Command{Action: "start", Prompt: "检查移动端布局"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDetail(t, c, first)
+	waitDetail(t, c, second)
+
+	h := Handler(config.Config{Mode: "http", DeviceID: "test-device", Token: "must-not-be-needed", DataDir: t.TempDir()}, c)
+	req := httptest.NewRequest(http.MethodGet, "/display/sessions?limit=10", nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("display session list: %d %s", res.Code, res.Body.String())
+	}
+	var page displaySessionPage
+	if err := json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Data) != 2 || page.Data[0].TaskRef == "" || page.Data[1].TaskRef == "" {
+		t.Fatalf("unexpected display sessions: %+v", page)
+	}
+	if strings.Contains(res.Body.String(), "must-not-be-needed") || strings.Contains(res.Body.String(), "events") {
+		t.Fatalf("display session list leaked protected or event data: %s", res.Body.String())
 	}
 }

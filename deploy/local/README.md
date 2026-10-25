@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | `/mcp` | `127.0.0.1:8080` | 控制 MCP，创建和驱动 AgentAPI Session |
 | `/display/` | `127.0.0.1:8080` | Session Event 渲染网页 |
+| `/display/sessions` | `127.0.0.1:8080` | 投屏页面轮询的公开只读任务列表 |
 | `/device/mcp` | `127.0.0.1:8787/mcp` | 模拟树莓派设备 MCP，打开网页并 AirPlay |
 
 先启动控制服务和设备服务，再启动 nginx；最后让 ngrok 暴露 `8000`：

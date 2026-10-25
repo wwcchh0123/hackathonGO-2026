@@ -3,33 +3,89 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#081016">
-  <title>Linxi · Session Display</title>
-  <link rel="stylesheet" href="./styles.css">
-  <script defer src="./app.js"></script>
+  <meta name="theme-color" content="#191919">
+  <title>CodeAgent · Linxi display</title>
+  <link rel="stylesheet" href="./styles.css?v=portal-2">
+  <script defer src="./app.js?v=portal-2"></script>
 </head>
 <body>
-  <div class="glow glow-a"></div><div class="glow glow-b"></div>
-  <div class="shell">
-    <header class="topbar">
-      <div class="brand"><span class="brand-mark"><i></i><i></i><i></i></span><div><div class="eyebrow">LINXI DEVICE</div><strong>Agent Observatory</strong></div></div>
-      <div class="session-head"><span id="runtime">Claude Code</span><b>·</b><code id="session-id">waiting</code></div>
-      <div class="top-right"><span id="connection">connecting</span><span id="status-pill" class="pill"><i></i><span id="status">READY</span></span><time id="clock">--:--</time></div>
-    </header>
-    <main class="layout">
-      <aside class="rail left">
-        <section class="card session-card"><div class="label"><span>SESSION</span><span id="progress">0 events</span></div><h1 id="session-title">Waiting for a session</h1><code id="session-long">No active session</code><div class="stat-grid"><div><small>STATE</small><b id="state-value">READY</b></div><div><small>EVENTS</small><b id="event-count">0</b></div><div><small>TOOLS</small><b id="tool-count">0</b></div><div><small>RUNTIME</small><b id="runtime-small">—</b></div></div></section>
-        <section class="card"><div class="label"><span>EVENT MIX</span><span>LIVE</span></div><div id="event-mix" class="mix"><span class="muted">Waiting for events…</span></div></section>
-        <section class="card outline"><div class="label"><span>DISPLAY FLOW</span><span>LOCAL</span></div><ol><li class="active"><i></i><span>Receive session</span><small>WebSocket</small></li><li><i></i><span>Render events</span><small>SSE</small></li><li><i></i><span>Mirror screen</span><small>AirPlay</small></li></ol></section>
-      </aside>
-      <section class="stage"><div class="stage-title"><div><div class="eyebrow">SESSION EVENT STREAM</div><h2>Build trace</h2></div><div class="signal"><i></i><i></i><i></i><span id="stream-state">waiting for first event</span></div></div><div id="timeline" class="timeline"><div id="empty" class="empty"><div class="orbit"></div><strong>Listening to the agent</strong><span>Session events will appear as they arrive.</span></div></div></section>
-      <aside class="rail right">
-        <section class="card now-card"><div class="label"><span>NOW</span><span id="now-number">—</span></div><div id="now-icon" class="now-icon">✦</div><h3 id="now-title">Ready</h3><p id="now-detail">The latest agent action will appear here.</p><div class="meter"><i id="meter-fill"></i></div></section>
-        <section class="card"><div class="label"><span>MODEL USAGE</span><span>SESSION</span></div><div id="model" class="model">—</div><div class="usage"><div><small>INPUT</small><b id="input">—</b></div><div><small>OUTPUT</small><b id="output">—</b></div><div><small>CACHE</small><b id="cache">—</b></div><div><small>COST</small><b id="cost">—</b></div></div></section>
-        <section class="airplay"><div class="airplay-icon"><i></i><i></i><i></i></div><div><small>AIRPLAY OUTPUT</small><strong id="airplay-target">configured target</strong><span><i></i> device mirror</span></div></section>
-      </aside>
+  <div class="app-shell">
+    <aside class="session-sidebar" aria-label="Session list">
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <div>
+          <strong>CodeAgent</strong>
+          <span>LINXI DISPLAY</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section-heading">
+        <span>Sessions</span>
+        <span id="session-list-count">0</span>
+      </div>
+      <div class="sidebar-sync">
+        <span id="session-sync">syncing</span>
+        <span class="polling"><i></i> 3s</span>
+      </div>
+      <nav id="session-list" class="session-list">
+        <div class="list-empty">
+          <span class="list-empty-mark">◌</span>
+          <strong>No sessions yet</strong>
+          <span>New tasks will appear here.</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span>AgentAPI session stream</span>
+        <span class="sidebar-live"><i></i><span id="sidebar-connection">connecting</span></span>
+      </div>
+    </aside>
+
+    <main class="run-panel">
+      <header class="run-header">
+        <div class="run-heading">
+          <div class="run-kicker">SESSION <span>/</span> <code id="session-id">waiting</code></div>
+          <h1 id="stage-title">Choose a session</h1>
+          <div class="run-subline">
+            <span id="runtime">Claude Code</span>
+            <span class="subline-dot">·</span>
+            <span id="connection">connecting</span>
+          </div>
+        </div>
+        <div class="run-header-meta">
+          <span id="status-pill" class="status-pill"><i></i><span id="status">READY</span></span>
+          <time id="clock">--:--:--</time>
+        </div>
+      </header>
+
+      <div class="run-meta-row">
+        <div class="run-summary">
+          <span class="summary-chevron">›</span>
+          <span id="run-summary-label">Ready</span>
+          <span class="summary-separator">·</span>
+          <span id="run-summary-count">0 steps</span>
+        </div>
+        <div class="display-status">
+          <span class="display-status-icon" aria-hidden="true">▱</span>
+          <span>AirPlay display</span>
+          <span class="display-status-dot"></span>
+        </div>
+      </div>
+
+      <section id="timeline" class="timeline" aria-live="polite">
+        <div id="empty" class="empty-state">
+          <div class="empty-icon">✦</div>
+          <strong>Choose a session to follow</strong>
+          <span>The selected AgentAPI run will appear here.</span>
+        </div>
+      </section>
+
+      <footer class="run-footer">
+        <span id="source">AgentAPI session events</span>
+        <span id="time-range">—</span>
+        <span><span id="event-count">0</span> visible steps</span>
+      </footer>
     </main>
-    <footer><span>SESSION EVENT → RENDER → AIRPLAY</span><span id="source">control service SSE</span><span id="time-range">—</span></footer>
   </div>
 </body>
 </html>

@@ -1,15 +1,10 @@
 [![CI](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/wwcchh0123/hackathonGO-2026/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="docs/assets/fenno.svg" width="120" height="120" alt="Fenno 蓝色狐狸标志" />
+  <img src="docs/assets/fenno.svg" width="120" height="120" alt="Fenno 蓝色狐狸标志" /><br />
+  <a href="docs/assets/fenno-air-wordmark.svg#gh-light-mode-only"><img src="docs/assets/fenno-air-wordmark.svg" width="224" height="40" alt="Fenno Air" /></a>
+  <a href="docs/assets/fenno-air-wordmark-dark.svg#gh-dark-mode-only"><img src="docs/assets/fenno-air-wordmark-dark.svg" width="224" height="40" alt="Fenno Air" /></a>
 </p>
-
-<p align="center">
-  <a href="docs/assets/fenno-air-wordmark.svg#gh-light-mode-only"><img src="docs/assets/fenno-air-wordmark.svg" width="224" height="52" alt="Fenno Air" /></a>
-  <a href="docs/assets/fenno-air-wordmark-dark.svg#gh-dark-mode-only"><img src="docs/assets/fenno-air-wordmark-dark.svg" width="224" height="52" alt="Fenno Air" /></a>
-</p>
-
-<br />
 
 <p align="center">
   <strong>开口即开工，有屏即主场。</strong>

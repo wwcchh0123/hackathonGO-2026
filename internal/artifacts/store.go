@@ -3,6 +3,7 @@ package artifacts
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/url"
 	"os"
@@ -20,7 +21,10 @@ type Store struct {
 	mu              sync.Mutex
 }
 
-func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, error) {
+// ScopeFilename belongs to the publication cache, never to exported user files.
+const ScopeFilename = ".linxi-preview-scope"
+
+func (s *Store) Publish(ctx context.Context, files []agentapi.File, storageScope ...string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(files) == 0 {
@@ -40,7 +44,7 @@ func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, err
 			return "", err
 		}
 		p := path.Clean(strings.ReplaceAll(f.Path, "\\", "/"))
-		if p == "." || strings.HasPrefix(p, "../") || path.IsAbs(p) || strings.Contains(p, ":") {
+		if p == "." || strings.HasPrefix(p, "../") || path.IsAbs(p) || strings.Contains(p, ":") || strings.EqualFold(strings.Split(p, "/")[0], ScopeFilename) {
 			return "", fmt.Errorf("unsafe artifact path")
 		}
 		if p == "index.html" {
@@ -58,6 +62,14 @@ func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, err
 	}
 	if entry == "" {
 		return "", fmt.Errorf("no HTML entry in exported artifacts")
+	}
+	scope := token
+	if len(storageScope) > 0 && storageScope[0] != "" {
+		scope = storageScope[0]
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(scope)))
+	if err := os.WriteFile(filepath.Join(root, ScopeFilename), []byte(digest), 0600); err != nil {
+		return "", err
 	}
 	complete = true
 	entries, _ := os.ReadDir(s.Root)
@@ -92,6 +104,31 @@ func (s *Store) Publish(ctx context.Context, files []agentapi.File) (string, err
 		resultURL.RawQuery = query.Encode()
 	}
 	return resultURL.String(), nil
+}
+
+// StorageScope keeps browser data stable across publications of one task.
+// Legacy cached publications have their own isolated scope.
+func (s *Store) StorageScope(publication string) (string, error) {
+	if len(publication) != 32 || strings.Trim(publication, "0123456789abcdef") != "" {
+		return "", fmt.Errorf("invalid publication")
+	}
+	root := filepath.Join(s.Root, publication)
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("publication unavailable")
+	}
+	data, err := os.ReadFile(filepath.Join(root, ScopeFilename))
+	if os.IsNotExist(err) {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte(publication))), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	scope := string(data)
+	if len(scope) != 64 || strings.Trim(scope, "0123456789abcdef") != "" {
+		return "", fmt.Errorf("invalid publication scope")
+	}
+	return scope, nil
 }
 
 func isNgrokHost(host string) bool {

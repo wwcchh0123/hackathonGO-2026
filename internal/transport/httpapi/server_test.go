@@ -205,8 +205,21 @@ func TestMCPToIndependentDeviceStreamAndAutomaticPreview(t *testing.T) {
 	}
 	content, _ := io.ReadAll(page.Body)
 	page.Body.Close()
-	if page.StatusCode != 200 || !strings.Contains(string(content), "番茄钟") {
+	if page.StatusCode != 200 || !strings.Contains(string(content), "data-storage-scope") {
 		t.Fatal(string(content))
+	}
+	rawURL, _ := url.Parse(preview["result_url"])
+	q := rawURL.Query()
+	q.Set("_linxi_raw", "1")
+	rawURL.RawQuery = q.Encode()
+	rawPage, err := http.Get(rawURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawContent, _ := io.ReadAll(rawPage.Body)
+	rawPage.Body.Close()
+	if !strings.Contains(string(rawContent), "番茄钟") || !strings.Contains(rawPage.Header.Get("Content-Security-Policy"), "sandbox allow-scripts allow-forms") {
+		t.Fatal("missing isolated interactive artifact", string(rawContent))
 	}
 	request("GET", "/api/tasks/"+r.TaskRef+"/events?after=evicted", "", 409)
 	request("GET", "/api/sessions/wrong/events", "", 404)
@@ -473,9 +486,58 @@ func TestPublicDisplayBindsToTaskRefAndReplaysEvents(t *testing.T) {
 	if stream.StatusCode != http.StatusOK || stream.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("display stream: %d %q", stream.StatusCode, stream.Header.Get("Content-Type"))
 	}
-	line, err := bufio.NewReader(stream.Body).ReadString('\n')
+	reader := bufio.NewReader(stream.Body)
+	line, err := reader.ReadString('\n')
 	if err != nil || line != "event: device-snapshot\n" {
 		t.Fatalf("display snapshot: %q (%v)", line, err)
+	}
+	for range 5 {
+		line, err = reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, "data:") && strings.Contains(line, `"title":"展示测试"`) {
+			return
+		}
+	}
+	t.Fatal("session metadata did not carry the explicit task title")
+}
+
+func TestPublicDisplayHeadChecksReferenceWithoutOpeningStreams(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := agentapi.NewMock(ctx)
+	mock.Step = time.Millisecond
+	c := session.New(ctx, mock, device.NewState("display-head"), &artifacts.Store{Root: t.TempDir()})
+	defer func() { cancel(); c.Wait() }()
+	r, err := c.Submit(session.Command{Action: "start", Prompt: "head-only fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDetail(t, c, r)
+	h := Handler(config.Config{Mode: "mock", DeviceID: "display-head", DataDir: t.TempDir(), Token: "private"}, c)
+	for range 6 {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodHead, "/display/events?task_ref="+r.TaskRef, nil))
+		if response.Code != 200 || response.Body.Len() != 0 || response.Header().Get("Content-Type") == "text/event-stream" {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	if c.State.Get().TaskRef != "" {
+		t.Fatal("HEAD selected a display target")
+	}
+	for _, test := range []struct {
+		method, path string
+		code         int
+	}{
+		{http.MethodHead, "/display/events", 400},
+		{http.MethodHead, "/display/events?task_ref=missing", 404},
+		{http.MethodGet, "/display/events?task_ref=" + r.TaskRef + "&after=missing-cursor", 409},
+	} {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.code {
+			t.Fatal(test.path, response.Code, response.Body.String())
+		}
 	}
 }
 

@@ -57,7 +57,7 @@ func (c *Controller) Preview(ctx context.Context, ref string) (string, error) {
 	if !html {
 		return "", errors.New("云端没有可预览的 HTML 导出文件；其他文件仍可在任务详情查看")
 	}
-	result, err := c.store.Publish(ctx, files)
+	result, err := c.store.Publish(ctx, files, s.ID)
 	if err != nil {
 		return "", err
 	}

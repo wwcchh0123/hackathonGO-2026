@@ -189,7 +189,7 @@ func TestSessionCatalogSDKContractProjectionAndVaults(t *testing.T) {
 	}))
 	defer upstream.Close()
 	p := NewHTTP(upstream.URL, "test-key", "agent", "env").WithVaults([]string{"v1", "v2"})
-	page, err := p.ListSessions(ctx, SessionQuery{Limit: 2, Page: "cursor", AgentID: "agent", Status: "idle", CreatedAfter: "2026-10-01T00:00:00Z", CreatedBefore: "2026-10-25T00:00:00Z", IncludeArchived: true})
+	page, err := p.ListSessions(ctx, SessionQuery{Limit: 2, Page: "cursor", AgentID: "unrelated-agent", Status: "idle", CreatedAfter: "2026-10-01T00:00:00Z", CreatedBefore: "2026-10-25T00:00:00Z", IncludeArchived: true})
 	if err != nil || len(page.Data) != 1 || page.NextPage != "next" {
 		t.Fatal(page, err)
 	}

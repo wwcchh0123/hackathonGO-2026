@@ -172,8 +172,18 @@ func (p *HTTP) ListSessions(ctx context.Context, q SessionQuery) (SessionPage, e
 	if q.Page != "" {
 		params.Page = param.NewOpt(q.Page)
 	}
-	if q.AgentID != "" {
-		params.AgentID = param.NewOpt(q.AgentID)
+	// Session catalog queries are scoped to the Agent configured for this
+	// provider. The API key may see sessions belonging to several Agents; the
+	// control service must never leak those into Linxi's task switcher. Keep the
+	// query field as a compatibility fallback for an unconfigured test client,
+	// but ignore caller-provided AgentID whenever this provider has a configured
+	// Agent.
+	agentID := p.agent
+	if agentID == "" {
+		agentID = q.AgentID
+	}
+	if agentID != "" {
+		params.AgentID = param.NewOpt(agentID)
 	}
 	var opts []option.RequestOption
 	// AgentAPI's public contract uses a singular status and fixed created_at desc.

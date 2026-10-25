@@ -53,13 +53,13 @@ func Handler(c *session.Controller, publicURL string) http.Handler {
 	schemas := map[string]map[string]any{
 		"new_task":     {"text": text, "parent_task_ref": ref},
 		"send_message": {"text": text, "task_ref": ref},
-		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": str, "agent_id": str, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
+		"list_tasks":   {"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "page": str, "status": map[string]any{"type": "string", "enum": []string{"idle", "running", "rescheduling", "terminated"}}, "include_archived": map[string]any{"type": "boolean"}, "created_after": str, "created_before": str},
 		"get_task":     {"task_ref": ref, "command_id": str, "events_limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "events_page": str, "files_page": str},
 	}
 	descriptions := map[string]string{
 		"new_task":     "明确新建独立任务；不停止其他任务。返回 task_ref、command_id 和可直接投屏的 display_url，accepted 仅表示已入队。接力历史任务时明确传 parent_task_ref。",
 		"send_message": "向明确的 task_ref 原话发送需求、修改、继续或暂停。省略引用仅复用同一灵矽对话最近一次写入目标；查询不改变目标。返回异步回执和 display_url，请用 get_task 核对 command_id。",
-		"list_tasks":   "只读查询当前 AgentAPI 身份可见任务。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
+		"list_tasks":   "只读查询当前配置 Agent 的任务；不会返回同一 API Key 下其他 Agent 的 session。按最近创建排序，读取单页；has_more 为真时不能声称已列出全部。按标题、时间和摘要选择 task_ref，歧义时询问用户。",
 		"get_task":     "只读任务详情，包含云端状态、命令结果、消息时间、停止原因、事件、文件元信息和可投屏 display_url。events_limit=0 只查状态和消息，不建事件流、不切屏、不下载预览。旧摘要不是本轮完成证明。",
 	}
 	for _, name := range []string{"list_tasks", "get_task", "send_message", "new_task"} {

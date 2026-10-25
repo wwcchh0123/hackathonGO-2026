@@ -52,7 +52,7 @@ func taskAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler, c *ses
 				return
 			}
 		}
-		page, err := c.ListTasks(r.Context(), session.ListOptions{Limit: n, Page: q.Get("page"), AgentID: q.Get("agent_id"), Status: q.Get("status"), IncludeArchived: archived, CreatedAfter: q.Get("created_after"), CreatedBefore: q.Get("created_before")})
+		page, err := c.ListTasks(r.Context(), session.ListOptions{Limit: n, Page: q.Get("page"), Status: q.Get("status"), IncludeArchived: archived, CreatedAfter: q.Get("created_after"), CreatedBefore: q.Get("created_before")})
 		if err != nil {
 			taskFailure(w, err)
 			return

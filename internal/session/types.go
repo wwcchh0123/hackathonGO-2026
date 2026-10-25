@@ -51,7 +51,6 @@ type Task struct {
 type ListOptions struct {
 	Limit           int    `json:"limit,omitempty"`
 	Page            string `json:"page,omitempty"`
-	AgentID         string `json:"agent_id,omitempty"`
 	Status          string `json:"status,omitempty"`
 	IncludeArchived bool   `json:"include_archived,omitempty"`
 	CreatedAfter    string `json:"created_after,omitempty"`

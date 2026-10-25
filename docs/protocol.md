@@ -31,7 +31,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 | 工具 | 参数 | 行为 |
 | --- | --- | --- |
-| `list_tasks` | `limit`（默认 20，上限 50）、`page`、可选 `agent_id/status/include_archived/created_after/created_before` | 查询当前 AgentAPI 身份可见的单页任务和消息摘录 |
+| `list_tasks` | `limit`（默认 20，上限 50）、`page`、可选 `status/include_archived/created_after/created_before` | 查询当前配置 Agent 的单页任务和消息摘录；不会带入同一 API Key 下其他 Agent 的 session |
 | `get_task` | 必填 `task_ref`，可选 `command_id/events_limit/events_page/files_page` | 查询云端状态、本地命令结果、最近消息、停止原因、原始事件和文件元信息 |
 | `send_message` | `text`，可选 `task_ref` | 原话发送到指定任务；运行中先 interrupt，再轮询真实 Status 至 idle，最后在同 Session 发送 |
 | `new_task` | `text`，可选 `parent_task_ref` | 新建独立 Session 并发送首条需求；不停止其他任务。接力时附上实际可读取的消息/文件元信息及 parent_session_id |
@@ -56,7 +56,7 @@ MCP 两种传输都不接受浏览器 Cookie 作为鉴权。mock 的 CONTROL_TOK
 
 ### 查询字段与停止原因
 
-`list_tasks` 返回 `data/next_page/has_more/sort/scope/queried_at/filters/partial`。当前公共上游只支持创建时间倒序，`sort=created_at_desc`，不能称为全局最近活跃。`scope=current_agentapi_identity`；默认不按新建 Agent/Environment 隐藏历史任务。时间过滤使用 RFC3339，分别对应 created_at[gte/lte]。不支持自然语言检索或无限翻页。
+`list_tasks` 返回 `data/next_page/has_more/sort/scope/queried_at/filters/partial`。当前公共上游只支持创建时间倒序，`sort=created_at_desc`，不能称为全局最近活跃。`scope=current_configured_agent`；服务端始终使用 `AGENTAPI_AGENT_ID` 过滤，不允许调用方切换到同一 API Key 下的其他 Agent。时间过滤使用 RFC3339，分别对应 created_at[gte/lte]。不支持自然语言检索或无限翻页。
 
 任务卡片含 task_ref、标题、创建/更新时间、原始状态、archived、runtime、can_continue 和 continue_reason。summary 只来自最近非空 agent.message 的多文本块合并摘录（上限 400 字），带来源 event_id 和消息原时间；每次最多检查最近 8 条 Agent 消息，尚有更早候选时以 summary_unavailable 标记不完整。列表并发至多 4，单项摘要失败保留其他任务并标记 partial。旧摘要不表示新轮次已完成，工具/错误事件不覆盖摘录。
 

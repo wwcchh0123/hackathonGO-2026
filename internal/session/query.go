@@ -53,7 +53,7 @@ func validateList(o *ListOptions) error {
 			}
 		}
 	}
-	if len(o.Page) > 512 || len(o.AgentID) > 200 {
+	if len(o.Page) > 512 {
 		return errors.New("查询参数过长")
 	}
 	return nil
@@ -65,11 +65,11 @@ func (c *Controller) ListTasks(ctx context.Context, o ListOptions) (TaskPage, er
 	ctx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
 	defer cancel()
 	now := time.Now().UTC()
-	page, err := c.Provider.ListSessions(ctx, agentapi.SessionQuery{Limit: o.Limit, Page: o.Page, AgentID: o.AgentID, Status: o.Status, IncludeArchived: o.IncludeArchived, CreatedAfter: o.CreatedAfter, CreatedBefore: o.CreatedBefore})
+	page, err := c.Provider.ListSessions(ctx, agentapi.SessionQuery{Limit: o.Limit, Page: o.Page, Status: o.Status, IncludeArchived: o.IncludeArchived, CreatedAfter: o.CreatedAfter, CreatedBefore: o.CreatedBefore})
 	if err != nil {
 		return TaskPage{}, err
 	}
-	out := TaskPage{Data: make([]Task, len(page.Data)), NextPage: page.NextPage, HasMore: page.NextPage != "", Sort: "created_at_desc", Scope: "current_agentapi_identity", QueriedAt: now, Filters: o}
+	out := TaskPage{Data: make([]Task, len(page.Data)), NextPage: page.NextPage, HasMore: page.NextPage != "", Sort: "created_at_desc", Scope: "current_configured_agent", QueriedAt: now, Filters: o}
 	for i, s := range page.Data {
 		c.mu.Lock()
 		ref, err := c.referenceLocked(s)

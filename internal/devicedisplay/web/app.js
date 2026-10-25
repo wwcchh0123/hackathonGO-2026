@@ -163,14 +163,29 @@ function statusLabel(status) {
   return 'Ready';
 }
 
+function isActiveStatus(status) {
+  return status === 'running' || status === 'rescheduling' || status === 'creating';
+}
+
 function setStatus(status, stopReason) {
   state.status = status || 'ready';
-  const running = state.status === 'running' || state.status === 'rescheduling';
+  const running = isActiveStatus(state.status);
   if (state.status !== 'idle') state.stopReason = 'unknown';
   else if (stopReason !== undefined) state.stopReason = (typeof stopReason === 'string' ? stopReason : stopReason?.type) || 'unknown';
   const done = state.status === 'idle' && state.stopReason === 'end_turn';
   const failed = state.status === 'idle' && ['retries_exhausted', 'budget_reached'].includes(state.stopReason);
   if (running) clearPreview();
+  const runPanel = document.querySelector('.run-panel');
+  runPanel.classList.toggle('running', running);
+  runPanel.dataset.status = state.status;
+  const activity = $('run-activity');
+  activity.hidden = !running;
+  $('run-activity-text').textContent = state.status === 'rescheduling' ? 'QUEUED' : state.status === 'creating' ? 'STARTING' : 'EXECUTING';
+  const loader = $('run-loader');
+  if (loader) {
+    loader.hidden = !running;
+    $('run-loader-label').textContent = state.status === 'rescheduling' ? 'Queued…' : state.status === 'creating' ? 'Starting…' : 'Working…';
+  }
   $('status').textContent = statusLabel(state.status).toUpperCase();
   $('status-pill').className = `status-pill ${running ? 'live' : done ? 'done' : failed ? 'error' : ''}`;
   $('run-summary-label').textContent = statusLabel(state.status);
@@ -292,7 +307,7 @@ function resetView() {
   state.seen.clear();
   state.total = 0;
   state.expanded.clear();
-  $('timeline').innerHTML = '<div id="empty" class="empty-state"><div class="empty-icon">✦</div><strong>Listening to the agent</strong><span>Events will appear as this session runs.</span></div>';
+  $('timeline').innerHTML = '<div id="empty" class="empty-state"><div class="empty-icon">✦</div><strong>Listening to the agent</strong><span>Events will appear as this session runs.</span></div><div id="run-loader" class="run-loader" role="status" aria-live="polite" hidden><span class="run-loader-ring" aria-hidden="true"></span><span id="run-loader-label">Working…</span></div>';
   $('event-count').textContent = '0';
   $('run-summary-count').textContent = '0 steps';
   $('time-range').textContent = '—';
@@ -505,6 +520,15 @@ function renderTimeline() {
         renderTimeline();
       });
     });
+  }
+  if (isActiveStatus(state.status)) {
+    const loader = document.createElement('div');
+    loader.id = 'run-loader';
+    loader.className = 'run-loader';
+    loader.setAttribute('role', 'status');
+    loader.setAttribute('aria-live', 'polite');
+    loader.innerHTML = `<span class="run-loader-ring" aria-hidden="true"></span><span id="run-loader-label">${state.status === 'rescheduling' ? 'Queued…' : state.status === 'creating' ? 'Starting…' : 'Working…'}</span>`;
+    container.appendChild(loader);
   }
   $('event-count').textContent = String(segments.length);
   $('run-summary-count').textContent = `${segments.length} ${segments.length === 1 ? 'step' : 'steps'}`;

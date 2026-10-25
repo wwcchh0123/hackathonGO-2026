@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -164,6 +165,42 @@ func TestAdminCenterMultiDeviceIsolationAndConcurrentTasks(t *testing.T) {
 	if aTasks.DeviceID != "device-a" || len(aTasks.Tasks.Data) != 2 {
 		t.Fatalf("device a tasks: %+v", aTasks)
 	}
+	var global struct {
+		Data    []controlplane.AdminTask `json:"data"`
+		HasMore bool                     `json:"has_more"`
+	}
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/tasks?query="+url.QueryEscape("设备 A")+"&limit=1", http.StatusOK, &global)
+	if len(global.Data) != 1 || global.Data[0].DeviceID != "device-a" || !global.HasMore {
+		t.Fatalf("global task search/pagination: %+v", global)
+	}
+	var dashboard controlplane.Dashboard
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/overview", http.StatusOK, &dashboard)
+	if dashboard.DeviceCount != 3 || dashboard.RunningTasks != 0 {
+		t.Fatalf("dashboard aggregation: %+v", dashboard)
+	}
+	var searchedDashboard controlplane.Dashboard
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/overview?query="+url.QueryEscape("设备 A"), http.StatusOK, &searchedDashboard)
+	if len(searchedDashboard.Tasks) != 2 || len(searchedDashboard.Devices) != 1 || searchedDashboard.Devices[0].DeviceID != "device-a" {
+		t.Fatalf("dashboard search: %+v", searchedDashboard)
+	}
+	var deviceDetail struct {
+		Device controlplane.DeviceOverview `json:"device"`
+	}
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/devices/device-a", http.StatusOK, &deviceDetail)
+	if deviceDetail.Device.DeviceID != "device-a" {
+		t.Fatalf("device detail: %+v", deviceDetail)
+	}
+	var globalDetail struct {
+		DeviceID string         `json:"device_id"`
+		Task     session.Detail `json:"task"`
+	}
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/tasks/device-a/"+ra.TaskRef+"?events_limit=5", http.StatusOK, &globalDetail)
+	if globalDetail.DeviceID != "device-a" || globalDetail.Task.Ref != ra.TaskRef {
+		t.Fatalf("global task detail: %+v", globalDetail)
+	}
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/tasks/device-b/"+ra.TaskRef, http.StatusNotFound, nil)
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/devices?health=bad", http.StatusBadRequest, nil)
+	adminJSON(t, hc, ctx, http.MethodGet, ts.URL+"/api/admin/tasks?status=bad", http.StatusBadRequest, nil)
 	var limited struct {
 		Tasks session.TaskPage `json:"tasks"`
 	}

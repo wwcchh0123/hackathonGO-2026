@@ -94,6 +94,24 @@ func New(ctx context.Context, p agentapi.Provider, state *device.State, store *a
 	return c
 }
 func (c *Controller) Wait() { c.wg.Wait() }
+
+// LatestCommand returns a copy of the most recent local command for a task.
+// It is used by the read-only control center without forcing a cloud detail
+// query or changing the selected device view.
+func (c *Controller) LatestCommand(ref string) *CommandStatus {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := c.tasks[ref]
+	if t == nil || len(t.order) == 0 {
+		return nil
+	}
+	status := t.commands[t.order[len(t.order)-1]]
+	if status == nil {
+		return nil
+	}
+	copy := *status
+	return &copy
+}
 func (c *Controller) pruneLocked(now time.Time) {
 	for ref, t := range c.tasks {
 		if t.pending == 0 && t.observers == 0 && now.After(t.expires) {

@@ -1,60 +1,101 @@
-# 当前实现架构
+# 架构设计
 
-本文描述仓库已实现的模块规格与职责。设计过程与后续 proposal 保留在 [Issue #6](https://github.com/wwcchh0123/hackathonGO-2026/issues/6)、[Issue #18](https://github.com/wwcchh0123/hackathonGO-2026/issues/18) 和 [Issue #25](https://github.com/wwcchh0123/hackathonGO-2026/issues/25)。
+本文是当前仓库的实现基线，描述已经落地的模块规格、边界、数据流和分工。设计过程与后续 proposal 保留在 [Issue #6](https://github.com/wwcchh0123/hackathonGO-2026/issues/6)、[Issue #18](https://github.com/wwcchh0123/hackathonGO-2026/issues/18) 和 [Issue #25](https://github.com/wwcchh0123/hackathonGO-2026/issues/25)。接口字段和限制以 [协议文档](protocol.md) 为准。
+
+## 范围
+
+- **本期实现**：Mac 软件语音终端、Go 控制服务、设备展示模拟程序、AgentAPI/Claude Code 编程链路、事件与静态产物展示，以及只读设备管理页；这些软件组件按目标树莓派终端的职责拆分，先在 Mac 和模拟设备上验证。
+- **目标硬件**：产品终端以 **Raspberry Pi（树莓派）** 为硬件基线。树莓派同时承担灵矽语音对话客户端、展示浏览器和 AirPlay 发送端；电视或其他大屏只作为 AirPlay 接收端。当前 `cmd/voice` 是 Mac 上的语音验证端，`cmd/device-display` 是树莓派设备侧的模拟实现。
+- **硬件验收边界**：树莓派具体型号、麦克风/扬声器、ALSA/Opus 构建和 AirPlay sender 在目标设备上的兼容性仍需现场验证；协议、控制服务和设备 MCP 的职责已经按树莓派部署方式确定。
 
 ## 系统组成
 
 ```mermaid
 flowchart LR
-  User[用户] <-->|录音 / 播报| Voice[Mac 软件语音终端]
+  User[用户] <-->|录音 / 播报| Voice[树莓派语音终端<br/>当前 Mac 软件验证]
   Voice <-->|OTA / WSS / Opus| Linx[灵矽云 ASR / LLM / TTS]
   Linx -->|控制 MCP /mcp| Control[Go 控制服务]
   Control <-->|Session / Events / Files| Agent[七牛 AgentAPI / Claude Code / 云端沙箱]
-  Linx -->|设备 MCP /device/mcp| Device[设备模拟程序]
+  Linx -->|设备 MCP /device/mcp| Device[树莓派设备 Runtime<br/>当前模拟程序]
   Device --> Browser[Chromium 打开 display_url]
   Control -->|展示页 / SSE / 静态产物| Browser
-  Browser -->|本机画面| Sender[doubletake AirPlay 发送端]
+  Browser -->|树莓派本机画面| Sender[树莓派 AirPlay 发送端]
   Sender --> Screen[接收屏幕]
 ```
 
-语音终端、控制服务、设备展示是三个独立进程。大屏只显示设备发送的画面；编程在 AgentAPI 沙箱中执行。当前以 Mac 软件设备和设备模拟程序验证，不规定最终硬件平台。
+语音终端、控制服务、设备展示是三个独立进程；目标部署中语音终端和设备展示进程运行在同一台树莓派上。大屏只显示树莓派发送的画面；编程在 AgentAPI 沙箱中执行。
 
-## 模块规格与分工
+## 模块规格与边界
 
-| 模块 | 输入与输出 | 职责与边界 |
-| --- | --- | --- |
-| `cmd/control` | 环境变量 → HTTP 服务 | 组装 provider、设备管理器、路由和优雅退出 |
-| `cmd/voice` | 启动参数 → 本机 8090 页面 | 组装设备身份、语音桥和生命周期 |
-| `cmd/device-display` | 设备配置、MCP 调用 → 浏览器/发送进程 | 打开指定地址、滚动、停止投屏，管理 Chromium 和 AirPlay 子进程 |
-| `internal/linx` | 身份文件、OTA、云端 WSS | 身份持久化、绑定检查、获取 token、hello 协商与设备协议 |
-| `internal/voice`、`voicecodec` | 浏览器 PCM ↔ 云端 Opus/文字 | 单窗口语音桥、录音/播报及打断；可选原生 libopus |
-| `internal/transport/mcp` | 控制 MCP JSON ↔ 领域命令/查询 | 四工具编解码、请求身份，不执行编程业务 |
-| `internal/controlplane` | 已鉴权设备调用、管理查询 | 进程内设备注册、按设备路由、只读管理聚合 |
-| `internal/session` | 任务引用、需求 → 异步回执/详情 | 唯一编程控制入口；固定发送目标、同任务顺序、未知结果核对、按需观察和预览 |
-| `internal/agentapi` | 领域请求 ↔ SDK | Session/Events/Files 上游适配与 Mock；不包含设备展示逻辑 |
-| `internal/events` | 原始 JSON → 历史/实时事件 | 保留未知字段、按事件 ID 去重、有界回放 |
-| `internal/device`、`progress` | 事件/查询 → 快照/消息摘录 | 展示状态与最新 Agent 消息；不调用额外摘要模型 |
-| `internal/artifacts` | 静态文件 → 发布目录/结果地址 | 路径校验、有界缓存、隔离存储作用域 |
-| `internal/transport/httpapi` | HTTP/WS/SSE ↔ 领域服务 | 鉴权、管理页、展示与预览容器 |
-| `internal/devicedisplay` | 嵌入页面资源 → 公共展示页 | 渲染任务、事件和产物；由控制服务提供资源 |
-| `internal/devicecontrol`、`devicecast` | MCP → 设备 Runtime / 进程 | 四个设备工具和 AirPlay sender 管理，不调用 AgentAPI |
+| 模块                                            | 输入                                  | 输出/状态                                     | 负责的行为与不变量                                                                                                             |
+| ----------------------------------------------- | ------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `cmd/control`                                   | 环境变量、进程信号                    | HTTP 服务、共享 provider、设备管理器          | 只做配置、依赖组装、启动和优雅退出；不写任务编排业务                                                                           |
+| `cmd/voice`                                     | 启动参数、`.data/voice` 身份          | 本机 `127.0.0.1:8090`                         | 组装树莓派语音进程的身份、语音桥和生命周期；当前 Mac 用于验证；灵矽设备 token 不进入浏览器、URL 或日志                         |
+| `cmd/device-display`                            | 设备配置、设备 MCP 调用               | 树莓派 Chromium、AirPlay sender、设备 MCP     | 管理树莓派上的浏览器和 sender 子进程；当前提供模拟设备实现；只展示/操作当前网页，不调用 AgentAPI                               |
+| `internal/linx`                                 | 身份文件、OTA、灵矽 WSS               | 设备身份、token、hello/音频协议状态           | 处理身份持久化、绑定、OTA 和协议协商；灵矽对话 ID 不当作 AgentAPI session id                                                   |
+| `internal/voice`、`internal/voicecodec`         | 浏览器 PCM、云端 Opus/文字事件        | 本地播放、字幕/人物快照、语音 WS              | 单窗口录音/播报和 `abort`；`abort` 只停止播报，不中断编程任务；Opus 为可选原生依赖                                             |
+| `internal/transport/mcp`                        | MCP JSON-RPC、Bearer 和设备/对话头    | 四个云端工具的 JSON 结果                      | 负责编解码、身份提取和错误包装；不决定 Session 目标、不执行编程业务                                                            |
+| `internal/controlplane`                         | 已鉴权设备请求、只读管理查询          | 进程内设备注册表、每设备 controller、管理聚合 | 按 `device_id` 路由和隔离；`online` 只表示最近收到鉴权请求，不表示硬件心跳                                                     |
+| `internal/session`                              | 任务引用、用户需求、AgentAPI provider | 异步 receipt、command 状态、task/detail       | 唯一编程控制入口；目标在入队时固定；修改遵循 `interrupt → authoritative idle → message`；不确定写入保留 `unknown` 且不自动重发 |
+| `internal/agentapi`                             | 领域请求、SDK/HTTP 响应               | Session、Events、Files、Mock                  | 隔离上游协议和重试边界；不包含设备展示或 GitHub 编排逻辑                                                                       |
+| `internal/events`                               | AgentAPI 原始事件                     | 有界历史、实时唤醒、回放游标                  | 保留原始 JSON 和未知字段；按事件 ID 去重；游标淘汰必须显式重新同步                                                             |
+| `internal/device`、`internal/progress`          | 事件、查询结果                        | 当前设备快照、一句话摘要                      | 只做可解释的状态投影和消息摘录；不调用额外摘要模型                                                                             |
+| `internal/artifacts`                            | AgentAPI 文件列表/内容                | 隔离静态发布目录、结果 URL                    | 校验相对路径、限制文件和磁盘规模；只托管静态产物，不代理任意后端端口                                                           |
+| `internal/transport/httpapi`                    | HTTP、WS、SSE、Cookie/Bearer          | 控制台、管理页、展示页和预览接口              | 负责鉴权和 wire 编解码；业务决策委托给 `session`/`controlplane`                                                                |
+| `internal/devicedisplay`                        | 嵌入页面资源、公开 task 引用          | 公共任务展示页、事件和产物视图                | 只读渲染任务过程与结果；公开展示不携带控制凭据                                                                                 |
+| `internal/devicecontrol`、`internal/devicecast` | 设备 MCP、浏览器/CDP、AirPlay 配置    | 设备工具结果、浏览器操作、sender 生命周期     | 提供七个设备工具（扫描、投屏、滚动、截图、DOM 检查、点击、停止）；不调用 AgentAPI，停止投屏不停止编程                          |
 
 `internal/transport/httpapi/devui` 是开发联调页面，`internal/voice/ui` 是用户语音终端，`internal/devicedisplay/web` 是大屏页面；三者用途不同。
 
 ## 三条独立链路
 
-1. **语音**：浏览器录音 → 本地 Go → 灵矽 WSS → ASR/智能体/TTS → 本地播放。语音 `abort` 只停止播报。
+1. **语音**：树莓派语音进程 → 灵矽 WSS → ASR/智能体/TTS → 树莓派本地播放。语音 `abort` 只停止播报。
 2. **编程**：灵矽调用 `new_task` / `send_message` → 控制服务入队 → AgentAPI。新任务建独立 Session；修改运行中任务遵循 `interrupt → 查询确认 idle → 同 Session 发消息`。查询不改变默认发送目标。
-3. **展示**：控制工具返回 `display_url` → 灵矽调用设备 `cast_screen` → Chromium 从控制服务获取页面/SSE → 预览导出产物 → AirPlay 镜像。切换或停止展示不停止编程。
+3. **展示**：控制工具返回 `display_url` → 灵矽调用设备 `cast_screen` → 树莓派 Chromium 从控制服务获取页面/SSE → 预览导出产物 → 树莓派 AirPlay sender 镜像到大屏。切换或停止展示不停止编程。
 
-## 状态与恢复
+## 引入的 MCP 工具
 
-- `task_ref` 是短期进程内引用，`command_id` 对应一次受理；灵矽对话 ID 与 AgentAPI Session ID 分开管理。
-- 命令排队/确认/未知与云端运行状态分开返回。`idle` 需结合当前轮次的 `stop_reason`，不能直接表示成功。
-- 原始事件按 `(session_id,event.id)` 去重。设备显式查看任务时才连接上游 SSE，离开或断线释放观察，不重发需求。
-- 控制服务重启会丢失设备注册和任务引用；AgentAPI 保存云端 Session。重新列出后可找回兼容任务，不保证丢失沙箱中未提交文件的恢复。
-- Create/Send 回执不确定时做有界回查，保留 unknown，不自动重复提交。当前不保证跨进程恰好一次投递。
-- 管理中心的“在线”表示最近收到已鉴权请求，不是硬件心跳。
+项目引入两套职责分离的 MCP 工具：**云端控制 MCP** 面向灵矽云智能体，负责把语音意图转换为 AgentAPI 任务操作；**设备展示 MCP** 面向灵矽设备，负责浏览器和投屏控制。设备展示 MCP 不持有 AgentAPI Key，也不直接调用 AgentAPI。
+
+### 云端控制 MCP：`/mcp`
+
+调用方向为“灵矽云 → Go 控制服务 → AgentAPI”。服务使用 Bearer `CONTROL_TOKEN` 鉴权，并通过 `X-Linx-Device-Id`、`X-Linx-Session-Id` 和 `X-Linx-Agent-Id` 识别设备与对话。当前对外收敛为四个工具：
+
+| 工具           | 类型     | 作用                                     | 关键语义                                                                                                  |
+| -------------- | -------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `list_tasks`   | 只读查询 | 分页列出当前配置 Agent 的任务            | 返回状态、标题、时间和近期消息摘录；不改变后续发送目标                                                    |
+| `get_task`     | 只读查询 | 查询指定 `task_ref` 的详情               | 返回云端状态、命令状态、停止原因、消息、有限事件和文件元信息；`events_limit=0` 可只查状态和消息           |
+| `new_task`     | 异步写入 | 创建独立 AgentAPI Session 并发送首条需求 | 返回 `task_ref`、`command_id` 和可选 `display_url`；`accepted` 只表示已受理，不表示任务完成               |
+| `send_message` | 异步写入 | 向指定任务发送修改、继续或暂停需求       | 运行中先 `interrupt`，确认权威 `idle` 后再向同一 Session 发送；写入结果不确定时保留 `unknown`，不自动重发 |
+
+`task_ref` 是控制服务生成的不透明短期引用，灵矽不需要理解真实 Session ID。新任务与续聊的发送目标在入队时固定；列表、详情和展示选择不会偷偷切换目标。配置 `PUBLIC_URL` 后，写入和详情结果可带 `display_url`，灵矽应把完整地址原样交给设备展示 MCP 的 `cast_screen`。
+
+### 设备展示 MCP：设备侧 `/device/mcp`
+
+调用方向为“灵矽云 → 设备 MCP → Chromium/AirPlay”。部署时可以通过反向代理挂在 `/device/mcp`，设备进程内部 handler 使用 `/mcp`。工具只操作设备本地展示状态：
+
+| 工具              | 作用                                          | 边界                                                     |
+| ----------------- | --------------------------------------------- | -------------------------------------------------------- |
+| `scan_screens`    | 扫描局域网投屏目标                            | 只返回可用屏幕，不启动任务                               |
+| `cast_screen`     | 打开 `display_url` 并开始 AirPlay 镜像        | 只切换展示页面，不创建或修改 AgentAPI Session            |
+| `scroll_screen`   | 滚动当前投屏页面                              | 只改变浏览器滚动位置                                     |
+| `capture_screen`  | 返回当前截图和页面结构                        | 截图与 DOM/iframe 信息用于观察；没有截图不能报告展示成功 |
+| `inspect_browser` | 读取当前页面及 iframe 的可见文本、元素和 HTML | 返回的 `element_id` 只在最近一次观察有效                 |
+| `click_browser`   | 点击最近观察返回的真实元素                    | 点击回执只表示已发出点击，仍需再次观察确认作品变化       |
+| `stop_cast`       | 停止浏览器/AirPlay 投屏                       | 只停止展示，不停止云端编程任务                           |
+
+### 两套 MCP 的协作顺序
+
+```text
+new_task / send_message
+  → 控制 MCP 返回 task_ref、command_id、display_url
+  → 灵矽调用设备 MCP.cast_screen(display_url)
+  → 设备浏览器打开展示页并订阅控制服务 SSE
+  → 需要交互时 capture_screen 或 inspect_browser → click_browser / scroll_screen
+  → stop_cast 只关闭展示链路
+```
+
+两套 MCP 的连接生命周期互不承担任务状态：MCP 断线不会取消 AgentAPI Session，设备切换页面不会改变消息发送目标。完整参数、分页、鉴权、错误和兼容传输见 [协议文档](protocol.md)。
 
 ## 静态产物与凭据
 
@@ -62,4 +103,14 @@ Agent 在沙箱构建作品并导出至 `/mnt/session/outputs/`。控制服务�
 
 AgentAPI Key 仅在控制服务。CONTROL_TOKEN 与上游 Key 分开；浏览器控制接口使用 HttpOnly Cookie，MCP 使用 Bearer。灵矽设备 token 仅在语音 Go 进程内。设备展示页和只读任务索引公开，不应用于敏感任务展示；部署暴露范围见 [部署指南](deploy.md)。
 
-完整接口、限制和配置以 [协议文档](protocol.md) 为准；验证证据与未验边界见 [评估说明](evaluation.md)。
+完整接口、限制和配置以 [协议文档](protocol.md) 为准；验收记录和未完成项见 [Issue #25](https://github.com/wwcchh0123/hackathonGO-2026/issues/25)。
+
+## 三位成员分工
+
+| 成员 | 负责方向 | 主责模块与交付 |
+| --- | --- | --- |
+| 姬长军 | 控制服务与核心编排 | `session`、`agentapi`、云端 MCP、HTTP/管理、协议和测试 |
+| 王成 | 树莓派语音端与整体联调 | `linx`、`voice`、`voicecodec`，语音链路和端到端验收 |
+| 汪世胤 | 树莓派展示与投屏 | `device-display`、设备 MCP、Chromium/DOM、AirPlay 和设备验收 |
+
+接口变化同步 `docs/protocol.md` 和测试；跨模块改动由对应主责人共同验收。

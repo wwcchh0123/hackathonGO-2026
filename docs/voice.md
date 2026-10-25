@@ -175,7 +175,7 @@ lsof -nP -iTCP:8090 -sTCP:LISTEN
 
 设备 token 每次连接通过 OTA 获取，仅保留在 Go 内存中，不交给浏览器，不写入 URL 或日志。OTA 固件信息不会用于安装硬件固件。本地连接校验 Host/Origin，只允许本机回环地址和一个语音窗口。
 
-开发测试和真实声画验收范围见 [评估与验证说明](evaluation.md)。
+开发测试和真实声画验收范围见 [Issue #25](https://github.com/wwcchh0123/hackathonGO-2026/issues/25)。
 
 ## 人物投屏版
 

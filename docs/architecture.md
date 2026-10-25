@@ -58,7 +58,7 @@ flowchart LR
 
 ## 静态产物与凭据
 
-Agent 在沙箱构建作品并导出至 `/mnt/session/outputs/`。控制服务按需读取 Files API，限制文件数、大小与时间，只托管静态产物。预览容器中的作品使用隔离 iframe 和受限本地存储，不能读取控制凭据或访问外部 API。
+Agent 在沙箱构建作品并导出至 `/mnt/session/outputs/`。控制服务按需读取当前 Session 的全部 Files 产物，按返回的相对路径同步到同一份发布目录；预览入口优先是根目录 `index.html`，入口引用的 CSS、JavaScript、图片和子目录资源会从该目录提供。同步仍限制文件数、大小与时间，只托管静态产物。预览容器中的作品使用隔离 iframe 和受限本地存储，不能读取控制凭据或访问外部 API。
 
 AgentAPI Key 仅在控制服务。CONTROL_TOKEN 与上游 Key 分开；浏览器控制接口使用 HttpOnly Cookie，MCP 使用 Bearer。灵矽设备 token 仅在语音 Go 进程内。设备展示页和只读任务索引公开，不应用于敏感任务展示；部署暴露范围见 [部署指南](deploy.md)。
 

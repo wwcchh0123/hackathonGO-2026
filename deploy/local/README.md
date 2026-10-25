@@ -15,7 +15,7 @@
 # 终端一：先准备好 ngrok 域名，再让控制服务生成可投屏的页面 URL。
 PUBLIC_URL=https://<ngrok-domain> \
 AGENTAPI_MODE=mock \
-CONTROL_TOKEN=<local-control-token> \
+CONTROL_TOKEN=local-control-token \
 go run ./cmd/control
 
 # 终端二：模拟树莓派。没有 BROWSER_BIN 时会自动寻找 Chromium。
@@ -74,6 +74,11 @@ BROWSER_USER_AGENT=LinxiDevice/0.1
 设备 MCP：https://<ngrok-domain>/device/mcp
 ```
 
+智控台中控制 MCP 的 `Authorization` 必须是同一进程的 `CONTROL_TOKEN`，完整值为
+`Bearer local-control-token`（真实部署请换成随机值，并在两处同步修改）。设备 MCP 不配置这个令牌。
+
 调用控制 MCP 的 `new_task` 或 `send_message` 后，从 JSON 结果读取 `display_url`，立即把完整 URL 原样传给设备 MCP 的 `cast_screen`。当 `PUBLIC_URL` 是 ngrok 域名时，`display_url` 会自动附加 `ngrok-skip-browser-warning=true`；模拟设备 Chromium 还使用非标准 User-Agent `LinxiDevice/0.1`，可避免后续资源请求进入浏览器提示页；可用 `BROWSER_USER_AGENT` 覆盖。用户要求切换历史任务时先调用 `list_tasks`，根据标题、时间和摘要选择明确的 `task_ref`，再调用 `get_task` 取得对应 `display_url`，最后把地址交给 `cast_screen`。`get_task` 只查询任务，不改变消息发送目标；`stop_cast` 只停止投屏，不停止 AgentAPI 任务。不要把控制令牌或 AgentAPI Key 填入工具参数，也不要把灵矽语音 session_id 当成 AgentAPI 的 task_ref。
+
+保存智控台角色配置后，需要让语音设备断开并重新连接，云端才会加载新的提示词和 MCP 工具定义。
 
 设备 MCP 的旧版 SSE endpoint 会由 nginx 的 `/device` 前缀正确回写为 `/device/mcp/message`；不要把设备 MCP 直接和控制 MCP 共用 `/mcp` 路径。

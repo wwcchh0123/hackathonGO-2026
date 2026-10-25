@@ -70,7 +70,7 @@ node --test internal/voice/test/pcm.test.mjs
 
 默认控制服务测试不依赖 libopus。语音测试额外启用 `opus` 构建标签，覆盖真实编码/解码与 16/24 kHz 输出；其他测试使用本地 HTTP/WebSocket 假上游，覆盖激活码 → 绑定 → 获取 token、握手鉴权、hello 超时、完整语音桥、停止播报后丢弃旧音频、关闭页面取消激活、跨站请求和双窗口限制。浏览器重采样测试覆盖 16/44.1/48/96 kHz、跨回调连续性、PCM16 裁剪与末帧补零。Node 只用于这项测试，不参与应用运行或构建。
 
-2026-10-25 已使用新的真实绑定设备完成 ASR/TTS、控制 MCP 创建 AgentAPI Session、设备 MCP 打开展示页和多任务 `list_tasks → get_task → cast_screen` 链路验证；本地模拟设备的浏览器渲染和 AirPlay sender 已启动。验证时 AirPlay 接收端离线，因此文档只把接收端画面显示作为待现场复验项，不把 sender 重试误报为屏幕已显示。绑定身份和凭据均不入库。
+ASR/TTS、控制 MCP、设备 MCP 和本地浏览器渲染分别已有真实联调记录；完整语音任务链路必须以当前智控台账号重新连接后复验。控制 MCP 的 Bearer 令牌必须与本地 `CONTROL_TOKEN` 完全一致，角色配置保存后也必须断开并重新连接语音设备。AirPlay 接收端若离线，不能把 sender 重试误报为屏幕已显示。绑定身份和凭据均不入库。
 
 ## 常见问题
 
@@ -92,4 +92,4 @@ node --test internal/voice/test/pcm.test.mjs
 
 控制服务升级后，在灵矽管理端重新发现并保存 `list_tasks/get_task/send_message/new_task`，替换旧三个工具，提示词使用 [协议文档](protocol.md#灵矽配置与部署)。新回执含任务引用和命令编号，Agent 应读取 JSON 字段后简短转述；查询结果和旧消息摘录不作为本轮完成证明。工具失败或 unknown 时先查询，不自动重复提交。
 
-Mac 语音桥继续只处理身份、音频和语音事件；本次没有把控制服务 devui 混入真实语音页面，也不通过 get_task 自动切换屏幕。任务展示通过独立设备接口明确选择。此前三工具的实测记录不代表新四工具已在真实语音端验证。
+Mac 语音桥只处理身份、音频和语音事件；云端 Agent 通过控制 MCP 创建、查询或继续任务，再把 `display_url` 交给独立设备 MCP 的 `cast_screen`。任务展示页支持多 Session，切换展示不改变消息发送目标。修改角色或 MCP 配置后，必须重新连接语音设备，不能用旧连接的工具缓存判断新配置是否生效。
